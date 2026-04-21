@@ -64,16 +64,20 @@ logwright --analyze --provider heuristic
 
 - `anthropic`
 - `openai`
+- `gemini`
 - `auto`
 - `heuristic`
 
-`auto` prefers Anthropic when `ANTHROPIC_API_KEY` is present, then OpenAI when `OPENAI_API_KEY` is present, and finally falls back to heuristics.
+`auto` prefers Anthropic when `ANTHROPIC_API_KEY` is present, then OpenAI when `OPENAI_API_KEY` is present, then Gemini when `GEMINI_API_KEY` is present, and finally falls back to heuristics.
+
+`logwright` auto-loads a repo-local `.env` file before provider resolution, so you can keep API keys in the project root without exporting them into your shell.
 
 Environment variables:
 
 ```bash
 export ANTHROPIC_API_KEY=...
 export OPENAI_API_KEY=...
+export GEMINI_API_KEY=...
 ```
 
 Optional model overrides:
@@ -81,12 +85,14 @@ Optional model overrides:
 ```bash
 export LOGWRIGHT_ANTHROPIC_MODEL=claude-3-7-sonnet-latest
 export LOGWRIGHT_OPENAI_MODEL=gpt-4o-mini
+export LOGWRIGHT_GEMINI_MODEL=gemini-2.5-flash
 ```
 
 Or pass a model explicitly:
 
 ```bash
 logwright --analyze --provider openai --model gpt-4o-mini
+logwright --analyze --provider gemini --model gemini-2.5-flash
 ```
 
 ## Example output
@@ -127,6 +133,7 @@ Model tokens: in=0, out=0
 ## Limitations
 
 - Anthropic currently uses JSON-only prompting plus local validation rather than tool calling.
+- Gemini uses the official `generateContent` structured-output path with `responseMimeType` and `responseJsonSchema`.
 - Remote analysis uses shallow cloning rather than the GitHub API.
 - The heuristic write suggestions are intentionally conservative and can read generic without an LLM provider.
 - HTML export, hook integration, and rebase-plan generation are not implemented yet.

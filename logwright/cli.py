@@ -11,6 +11,7 @@ from logwright.app import (
     render_write_preview,
     report_to_json,
 )
+from logwright.env import load_env_file
 from logwright.gittools import GitError
 from logwright.providers import ProviderError
 
@@ -27,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--provider",
         default="auto",
-        choices=["auto", "anthropic", "openai", "heuristic"],
+        choices=["auto", "anthropic", "openai", "gemini", "heuristic"],
         help="LLM provider to use. auto falls back to heuristics if no API key is set.",
     )
     parser.add_argument("--model", help="Override the provider model name")
@@ -59,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     repo_path = Path(args.repo).resolve()
+    load_env_file(repo_path / ".env")
 
     try:
         if args.analyze:

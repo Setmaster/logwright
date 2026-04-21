@@ -3,15 +3,22 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
 
-DEFAULT_OPENAI_MODEL = os.environ.get("LOGWRIGHT_OPENAI_MODEL", "gpt-4o-mini")
-DEFAULT_ANTHROPIC_MODEL = os.environ.get(
-    "LOGWRIGHT_ANTHROPIC_MODEL", "claude-3-7-sonnet-latest"
-)
+def default_openai_model() -> str:
+    return os.environ.get("LOGWRIGHT_OPENAI_MODEL", "gpt-4o-mini")
+
+
+def default_anthropic_model() -> str:
+    return os.environ.get("LOGWRIGHT_ANTHROPIC_MODEL", "claude-3-7-sonnet-latest")
+
+
+def default_gemini_model() -> str:
+    return os.environ.get("LOGWRIGHT_GEMINI_MODEL", "gemini-2.5-flash")
 
 
 class ProviderError(RuntimeError):
@@ -73,8 +80,9 @@ def _extract_json_text(text: str) -> dict[str, Any]:
 class OpenAIProvider(BaseProvider):
     name = "openai"
 
-    def __init__(self, model: str = DEFAULT_OPENAI_MODEL) -> None:
-        super().__init__(model=model)
+    def __init__(self, model: str | None = None) -> None:
+        resolved_model = model or default_openai_model()
+        super().__init__(model=resolved_model)
         self.api_key = os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
             raise ProviderError("OPENAI_API_KEY is not set")
@@ -132,8 +140,9 @@ class OpenAIProvider(BaseProvider):
 class AnthropicProvider(BaseProvider):
     name = "anthropic"
 
-    def __init__(self, model: str = DEFAULT_ANTHROPIC_MODEL) -> None:
-        super().__init__(model=model)
+    def __init__(self, model: str | None = None) -> None:
+        resolved_model = model or default_anthropic_model()
+        super().__init__(model=resolved_model)
         self.api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not self.api_key:
             raise ProviderError("ANTHROPIC_API_KEY is not set")
@@ -177,8 +186,83 @@ class AnthropicProvider(BaseProvider):
                     data=data,
                     input_tokens=usage.get("input_tokens"),
                     output_tokens=usage.get("output_tokens"),
-                )
+        )
         raise ProviderError("Anthropic response did not contain text content")
+
+
+class GeminiProvider(BaseProvider):
+    name = "gemini"
+
+    def __init__(self, model: str | None = None) -> None:
+        resolved_model = model or default_gemini_model()
+        super().__init__(model=resolved_model)
+        self.api_key = os.environ.get("GEMINI_API_KEY")
+        if not self.api_key:
+            raise ProviderError("GEMINI_API_KEY is not set")
+
+    def generate_json(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        schema_name: str,
+        schema: dict[str, Any],
+        max_output_tokens: int = 900,
+    ) -> ProviderResponse:
+        del schema_name
+        payload = {
+            "system_instruction": {
+                "parts": [
+                    {
+                        "text": (
+                            f"{system_prompt}\n\n"
+                            "Return JSON only. Do not use markdown fences."
+                        )
+                    }
+                ]
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": user_prompt}],
+                }
+            ],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseJsonSchema": schema,
+                "maxOutputTokens": max_output_tokens,
+            },
+        }
+        model_name = urllib.parse.quote(self.model, safe="")
+        raw = _json_request(
+            (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{model_name}:generateContent"
+            ),
+            {
+                "x-goog-api-key": self.api_key,
+                "Content-Type": "application/json",
+            },
+            payload,
+        )
+        prompt_feedback = raw.get("promptFeedback", {})
+        if prompt_feedback.get("blockReason"):
+            raise ProviderError(
+                f"Gemini blocked the request: {prompt_feedback['blockReason']}"
+            )
+        for candidate in raw.get("candidates", []):
+            content = candidate.get("content", {})
+            for part in content.get("parts", []):
+                text = part.get("text")
+                if text:
+                    data = _extract_json_text(text)
+                    usage = raw.get("usageMetadata", {})
+                    return ProviderResponse(
+                        data=data,
+                        input_tokens=usage.get("promptTokenCount"),
+                        output_tokens=usage.get("candidatesTokenCount"),
+                    )
+        raise ProviderError("Gemini response did not contain JSON text")
 
 
 def resolve_provider(provider_name: str, model: str | None = None) -> BaseProvider | None:
@@ -186,12 +270,16 @@ def resolve_provider(provider_name: str, model: str | None = None) -> BaseProvid
         return None
     if provider_name == "auto":
         if os.environ.get("ANTHROPIC_API_KEY"):
-            return AnthropicProvider(model or DEFAULT_ANTHROPIC_MODEL)
+            return AnthropicProvider(model or default_anthropic_model())
         if os.environ.get("OPENAI_API_KEY"):
-            return OpenAIProvider(model or DEFAULT_OPENAI_MODEL)
+            return OpenAIProvider(model or default_openai_model())
+        if os.environ.get("GEMINI_API_KEY"):
+            return GeminiProvider(model or default_gemini_model())
         return None
     if provider_name == "anthropic":
-        return AnthropicProvider(model or DEFAULT_ANTHROPIC_MODEL)
+        return AnthropicProvider(model or default_anthropic_model())
     if provider_name == "openai":
-        return OpenAIProvider(model or DEFAULT_OPENAI_MODEL)
+        return OpenAIProvider(model or default_openai_model())
+    if provider_name == "gemini":
+        return GeminiProvider(model or default_gemini_model())
     raise ProviderError(f"unknown provider: {provider_name}")

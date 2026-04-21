@@ -1,7 +1,13 @@
+import os
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from logwright.app import detect_low_signal_subject, heuristic_analysis, heuristic_commit_message
+from logwright.env import load_env_file
 from logwright.models import CommitRecord, RepoStyle
+from logwright.providers import GeminiProvider, resolve_provider
 
 
 def build_style() -> RepoStyle:
@@ -53,6 +59,41 @@ class LogwrightHeuristicTests(unittest.TestCase):
             detail_level="terse",
         )
         self.assertTrue(message.startswith("fix("))
+
+
+class LogwrightEnvTests(unittest.TestCase):
+    def test_load_env_file_sets_missing_values_only(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text(
+                'ANTHROPIC_API_KEY=anthropic-test\n'
+                'export GEMINI_API_KEY="gemini-test"\n'
+                "OPENAI_API_KEY=openai-from-file\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                "os.environ",
+                {"OPENAI_API_KEY": "already-set"},
+                clear=False,
+            ):
+                loaded = load_env_file(env_path)
+                self.assertTrue(loaded)
+                self.assertEqual("anthropic-test", os.environ["ANTHROPIC_API_KEY"])
+                self.assertEqual("gemini-test", os.environ["GEMINI_API_KEY"])
+                self.assertEqual("already-set", os.environ["OPENAI_API_KEY"])
+
+    def test_auto_provider_uses_gemini_when_only_gemini_key_exists(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "GEMINI_API_KEY": "gemini-test",
+                "LOGWRIGHT_GEMINI_MODEL": "gemini-2.5-flash",
+            },
+            clear=True,
+        ):
+            provider = resolve_provider("auto")
+            self.assertIsInstance(provider, GeminiProvider)
+            self.assertEqual("gemini-2.5-flash", provider.model)
 
 
 if __name__ == "__main__":
