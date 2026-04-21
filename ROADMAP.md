@@ -6,15 +6,17 @@ long backlog. It is intentionally short and focused on product-facing work.
 ## Current focus
 
 - Improve machine-readable reporting so CI and automation can consume results more easily.
-- Continue improving low-friction local onboarding and packaging polish.
+- Keep making the day-to-day commit-writing path faster and clearer.
 
 ## Recently shipped
 
 - Visible provider fallback reasons in terminal and JSON output.
+- Cleaner terminal reports that hide zero-value fallback noise and surface middle-bucket commits.
 - Actionable reword plans for weak commits.
 - Estimated API cost reporting for the default shipping models.
 - A packaged `--install-commit-msg-hook` flow for repo-local hook setup.
 - A hook-friendly `--commit-msg-file` mode for validating pending commit messages.
+- More resilient commit-msg parsing for `core.commentChar=auto`, empty initial commits, and repo-root `.env` loading.
 - More reliable Gemini-backed analysis and write flows.
 - A checked-in demo transcript covering analysis mode, write mode, and commit-msg validation.
 - Sharper docs-only heuristic rewrite suggestions in the no-provider path.
@@ -22,7 +24,7 @@ long backlog. It is intentionally short and focused on product-facing work.
 ## Next
 
 - Continue improving heuristic suggestions for very low-context staged diffs.
-- Continue polishing docs and examples as the CLI output evolves.
+- Tighten daily-use commit-msg and hook flows for repeated local use.
 
 ## Later
 

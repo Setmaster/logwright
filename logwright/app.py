@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,8 @@ from logwright.gittools import (
     cloned_remote_repo,
     detect_repo_style,
     ensure_git_repo,
+    head_commit_message,
+    head_exists,
     git_comment_char,
     git_dir,
     git_path,
@@ -685,7 +688,7 @@ def suggestion_variants(
                 style=style,
                 detail_level="standard",
             ),
-            why="Balanced subject plus compact body for multi-file changes.",
+            why="Balanced default with a short supporting body.",
         ),
         SuggestionVariant(
             label="detailed",
@@ -726,13 +729,20 @@ def choose_default_variant(variants: list[SuggestionVariant]) -> SuggestionVaria
 
 def open_in_editor(initial_text: str) -> str:
     editor = os.environ.get("GIT_EDITOR") or os.environ.get("EDITOR") or "vi"
+    command = shlex.split(editor)
+    if not command:
+        raise GitError("EDITOR is empty; set EDITOR or GIT_EDITOR to a valid command")
     with tempfile.NamedTemporaryFile("w+", suffix=".commitmsg", delete=False) as handle:
         handle.write(initial_text)
         handle.flush()
         temp_path = Path(handle.name)
     try:
-        subprocess.run(shlex.split(editor) + [str(temp_path)], check=True)
+        subprocess.run(command + [str(temp_path)], check=True)
         return temp_path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError as exc:
+        raise GitError(f"editor not found: {command[0]}") from exc
+    except subprocess.CalledProcessError as exc:
+        raise GitError(f"editor exited with status {exc.returncode}: {command[0]}") from exc
     finally:
         temp_path.unlink(missing_ok=True)
 
@@ -743,11 +753,13 @@ def run_commit(repo_path: Path, message: str) -> None:
         handle.flush()
         temp_path = Path(handle.name)
     try:
-        subprocess.run(
+        process = subprocess.run(
             ["git", "commit", "-F", str(temp_path)],
             cwd=repo_path,
-            check=True,
+            check=False,
         )
+        if process.returncode != 0:
+            raise GitError(f"git commit failed with status {process.returncode}")
     finally:
         temp_path.unlink(missing_ok=True)
 
@@ -768,7 +780,7 @@ def write_mode(
     if print_only:
         return changes, style, variants, choose_default_variant(variants).message
 
-    final_message = interactive_write_selection(
+    final_message, _ = interactive_write_selection(
         repo_path=repo,
         variants=variants,
         commit_now=commit_now,
@@ -824,7 +836,8 @@ def check_pending_commit_message(
 
 
 def pending_commit_record(repo: Path, message_text: str) -> CommitRecord:
-    normalized = _sanitize_commit_message(message_text, git_comment_char(repo))
+    comment_char = git_comment_char(repo, message_text)
+    normalized = _sanitize_commit_message(message_text, comment_char)
     lines = normalized.splitlines()
     subject = lines[0].strip() if lines else ""
     body = "\n".join(line.rstrip() for line in lines[1:]).strip()
@@ -837,11 +850,24 @@ def pending_commit_record(repo: Path, message_text: str) -> CommitRecord:
     except GitError as exc:
         if "no staged changes found" not in str(exc):
             raise
-        head_commit = get_commit_record(repo, "HEAD")
-        parent_count = head_commit.parent_count
-        files = head_commit.files
-        stats_text = head_commit.stats_text
-        patch_excerpt = head_commit.patch_excerpt
+        parent_count = pending_commit_parent_count(repo)
+        if not head_exists(repo):
+            files = []
+            stats_text = ""
+            patch_excerpt = ""
+        elif _should_use_head_context_for_pending_message(
+            repo=repo,
+            raw_message=message_text,
+            comment_char=comment_char,
+        ):
+            head_commit = get_commit_record(repo, "HEAD")
+            files = head_commit.files
+            stats_text = head_commit.stats_text
+            patch_excerpt = head_commit.patch_excerpt
+        else:
+            files = []
+            stats_text = ""
+            patch_excerpt = ""
 
     return CommitRecord(
         sha="STAGED",
@@ -856,44 +882,83 @@ def pending_commit_record(repo: Path, message_text: str) -> CommitRecord:
     )
 
 
+def _should_use_head_context_for_pending_message(
+    *,
+    repo: Path,
+    raw_message: str,
+    comment_char: str,
+) -> bool:
+    if pending_commit_parent_count(repo) > 1:
+        return True
+    previous_message = head_commit_message(repo)
+    if not previous_message:
+        return False
+    normalized_current = _sanitize_commit_message(raw_message, comment_char).strip()
+    normalized_previous = previous_message.strip()
+    if not normalized_current or normalized_current == normalized_previous:
+        return False
+    if not _has_comment_suffix_block(raw_message, comment_char):
+        return False
+    similarity = SequenceMatcher(
+        None,
+        normalized_current.lower(),
+        normalized_previous.lower(),
+    ).ratio()
+    return similarity >= 0.5
+
+
 def interactive_write_selection(
     *,
     repo_path: Path,
     variants: list[SuggestionVariant],
     commit_now: bool,
-) -> str | None:
+) -> tuple[str | None, bool]:
     default = choose_default_variant(variants)
-    selection = input(
-        "Choose [1-3], press Enter for standard, `e` to edit standard, or `q` to quit [2]: "
-    ).strip()
     final_message: str | None
-    if selection == "":
-        final_message = default.message
-    elif selection in {"1", "2", "3"}:
-        final_message = variants[int(selection) - 1].message
-    elif selection.lower() == "e":
-        final_message = open_in_editor(default.message)
-    elif selection.lower() == "q":
-        return None
-    else:
-        final_message = open_in_editor(selection)
+    while True:
+        selection = _prompt_input(
+            "Choose [1-3], press Enter for standard, `e` to edit standard, "
+            "`c` for a custom message, or `q` to quit [2]: "
+        ).strip()
+        if selection == "":
+            final_message = default.message
+            break
+        if selection in {"1", "2", "3"}:
+            final_message = variants[int(selection) - 1].message
+            break
+        if selection.lower() == "e":
+            final_message = open_in_editor(default.message)
+            break
+        if selection.lower() == "c":
+            seed = _prompt_input("Custom message seed (optional): ")
+            final_message = open_in_editor(seed)
+            break
+        if selection.lower() == "q":
+            return None, False
+        print("Invalid selection. Enter 1-3, press Enter, `e`, `c`, or `q`.")
 
     if final_message is None or not final_message.strip():
-        return None
+        return None, False
 
     if commit_now:
         run_commit(repo_path, final_message)
-        return final_message
+        return final_message, True
 
-    followup = input("Commit with this message now? [y/N/e]: ").strip().lower()
-    if followup == "e":
-        final_message = open_in_editor(final_message)
-        if final_message:
+    while True:
+        followup = _prompt_input(
+            "Commit with this message now? [y/N], or edit before deciding [e]: "
+        ).strip().lower()
+        if followup == "e":
+            final_message = open_in_editor(final_message)
+            if final_message is None or not final_message.strip():
+                return None, False
+            continue
+        if followup == "y":
             run_commit(repo_path, final_message)
-    elif followup == "y":
-        run_commit(repo_path, final_message)
-
-    return final_message
+            return final_message, True
+        if followup in {"", "n"}:
+            return final_message, False
+        print("Invalid selection. Enter `y`, `n`, or `e`.")
 
 
 def install_commit_msg_hook(
@@ -962,18 +1027,19 @@ def install_commit_msg_hook(
 
 
 def render_analysis_report(report: AnalysisReport) -> str:
-    bad = [item for item in report.results if (item.score or 0) <= 4]
-    good = [item for item in report.results if (item.score or 0) >= 8]
+    bad = [item for item in report.results if item.score is not None and item.score <= 4]
+    good = [item for item in report.results if item.score is not None and item.score >= 8]
     mixed = [
-        item for item in report.results if item.score is None or 4 < (item.score or 0) < 8
+        item for item in report.results if item.score is None or 4 < item.score < 8
     ]
+    middle = [item for item in mixed if not item.special_case]
     vague = [item for item in report.scored_results() if "generic_subject" in item.reason_codes]
     one_word = [item for item in report.scored_results() if "short_subject" in item.reason_codes]
 
     lines = [
         f"Analyzed {report.scanned_commits} commits in {report.repo_id}",
         f"Detected style: {report.style.description}",
-        f"Provider: {report.usage.provider} ({report.usage.model})",
+        f"Provider: {_render_provider_label(report.usage)}",
         "",
         "COMMITS THAT NEED WORK",
     ]
@@ -1001,6 +1067,18 @@ def render_analysis_report(report: AnalysisReport) -> str:
     else:
         lines.append("No commits landed in the strongest bucket yet.")
         lines.append("")
+
+    if middle:
+        lines.append("COMMITS IN THE MIDDLE")
+        for item in middle[:5]:
+            lines.extend(
+                [
+                    f'- {item.sha[:7]} "{item.subject}"',
+                    f"  Score: {item.score}/10",
+                    f"  Note: {item.summary}",
+                    "",
+                ]
+            )
 
     special = [item for item in mixed if item.special_case]
     if special:
@@ -1045,7 +1123,7 @@ def render_write_preview(
             f"({changes.file_count} files changed, +{changes.additions} -{changes.deletions})"
         ),
         f"Detected style: {style.description}",
-        f"Provider: {usage.provider} ({usage.model})",
+        f"Provider: {_render_provider_label(usage)}",
         "",
         "Changed files:",
     ]
@@ -1075,7 +1153,7 @@ def render_commit_check_report(report: CommitCheckReport) -> str:
     lines = [
         f"Checked pending commit message in {report.repo_id}",
         f"Detected style: {report.style.description}",
-        f"Provider: {report.usage.provider} ({report.usage.model})",
+        f"Provider: {_render_provider_label(report.usage)}",
         f"Subject: {report.result.subject or '(empty subject)'}",
         "",
     ]
@@ -1087,12 +1165,27 @@ def render_commit_check_report(report: CommitCheckReport) -> str:
     else:
         lines.append(f"Result: {'pass' if report.passed else 'fail'}")
     lines.extend(_format_prefixed_block("Summary: ", report.result.summary, "         "))
-    if report.result.issues:
-        lines.extend(_format_prefixed_block("Main issue: ", report.result.issues[0], "            "))
-    lines.extend(_format_prefixed_block("Suggested message: ", report.result.better_message, "                   "))
+    main_issue = _distinct_main_issue(report.result)
+    if main_issue:
+        lines.extend(_format_prefixed_block("Main issue: ", main_issue, "            "))
+    if not report.passed:
+        lines.extend(
+            _format_prefixed_block(
+                "Suggested message: ",
+                report.result.better_message,
+                "                   ",
+            )
+        )
     lines.append("")
     lines.extend(_render_usage_lines(report.usage))
     return "\n".join(lines)
+
+
+def _distinct_main_issue(result: AnalysisResult) -> str | None:
+    for issue in result.issues:
+        if issue != result.summary:
+            return issue
+    return None
 
 
 def render_hook_install_result(result: HookInstallResult) -> str:
@@ -1111,12 +1204,7 @@ def render_hook_install_result(result: HookInstallResult) -> str:
     lines.extend(
         _format_prefixed_block(
             "Runs: ",
-            _hook_command_preview(
-                repo=Path(result.repo_path),
-                provider_name=result.provider,
-                model=result.model,
-                min_score=result.min_score,
-            ),
+            result.command,
             "      ",
         )
     )
@@ -1131,6 +1219,34 @@ def render_hook_install_result(result: HookInstallResult) -> str:
 
 def commit_check_to_json(report: CommitCheckReport) -> str:
     return json.dumps(report.to_dict(), indent=2)
+
+
+def _prompt_input(prompt: str) -> str:
+    try:
+        return input(prompt)
+    except KeyboardInterrupt as exc:
+        raise GitError("interactive write mode cancelled") from exc
+    except EOFError as exc:
+        raise GitError(
+            "interactive write mode requires a terminal; rerun with --write --print-only"
+        ) from exc
+
+
+def _has_comment_suffix_block(message_text: str, comment_char: str) -> bool:
+    count = 0
+    for raw_line in reversed(message_text.splitlines()):
+        if not raw_line.strip():
+            if count:
+                break
+            continue
+        stripped = raw_line.lstrip()
+        if not stripped.startswith(comment_char):
+            break
+        remainder = stripped[len(comment_char) :]
+        if remainder and not remainder[:1].isspace():
+            break
+        count += 1
+    return count >= 2
 
 
 def hook_install_to_json(result: HookInstallResult) -> str:
@@ -1204,6 +1320,13 @@ def _format_prefixed_block(prefix: str, text: str, continuation_indent: str) -> 
     for line in lines[1:]:
         formatted.append("" if not line else f"{continuation_indent}{line}")
     return formatted
+
+
+def _render_provider_label(usage: UsageStats) -> str:
+    label = f"{usage.provider} ({usage.model})"
+    if usage.fallbacks and usage.provider != "heuristic":
+        return f"{label}, fell back to heuristic"
+    return label
 
 
 def _render_usage_lines(usage: UsageStats) -> list[str]:
@@ -1283,29 +1406,6 @@ def _hook_command(
         f"export PYTHONPATH={shlex.quote(str(source_root))}" '"${PYTHONPATH:+:$PYTHONPATH}"'
     )
     return "\n".join([pythonpath_prefix, f"exec {exec_command}"])
-
-
-def _hook_command_preview(
-    *,
-    repo: Path,
-    provider_name: str,
-    model: str | None,
-    min_score: int,
-) -> str:
-    args = [
-        "logwright",
-        "--commit-msg-file",
-        '"$1"',
-        "--provider",
-        provider_name,
-        "--min-score",
-        str(min_score),
-        "--repo",
-        str(repo),
-    ]
-    if model:
-        args.extend(["--model", model])
-    return " ".join('"$1"' if arg == '"$1"' else shlex.quote(arg) for arg in args)
 
 
 def _unique_backup_path(hook_path: Path) -> Path:

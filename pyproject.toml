@@ -8,16 +8,16 @@ version = "0.1.0"
 description = "AI-assisted git commit message critic and writer"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
   {name = "Victor"}
 ]
 keywords = ["git", "commit", "cli", "llm", "developer-tools"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Environment :: Console",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.11",
@@ -28,6 +28,12 @@ classifiers = [
 
 [project.scripts]
 logwright = "logwright.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Setmaster/logwright"
+Repository = "https://github.com/Setmaster/logwright"
+Documentation = "https://github.com/Setmaster/logwright#readme"
+Issues = "https://github.com/Setmaster/logwright/issues"
 
 [tool.setuptools]
 packages = ["logwright"]

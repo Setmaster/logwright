@@ -52,6 +52,19 @@ IGNORED_KEYWORDS = {
     "false",
     "with",
 }
+AUTO_COMMENT_HINTS = (
+    "Please enter the commit message",
+    "On branch ",
+    "Changes to be committed:",
+    "Changes not staged for commit:",
+    "Untracked files:",
+    "Initial commit",
+    "No commits yet",
+    "nothing to commit",
+    "All conflicts fixed but you are still merging.",
+    "It looks like you may be committing a merge.",
+    "Date:",
+)
 
 
 class GitError(RuntimeError):
@@ -108,6 +121,16 @@ def infer_repo_id(repo: Path) -> str:
     if remote:
         return remote
     return str(repo.resolve())
+
+
+def head_exists(repo: Path) -> bool:
+    return bool(run_git(repo, "rev-parse", "-q", "--verify", "HEAD", check=False).strip())
+
+
+def head_commit_message(repo: Path) -> str | None:
+    if not head_exists(repo):
+        return None
+    return run_git(repo, "log", "-1", "--format=%s%n%n%b").strip()
 
 
 @contextmanager
@@ -252,15 +275,68 @@ def detect_repo_style(repo: Path, sample_size: int = 25) -> RepoStyle:
     )
 
 
-def git_comment_char(repo: Path) -> str:
+def git_comment_char(repo: Path, message_text: str | None = None) -> str:
     raw = run_git(repo, "config", "--get", "core.commentChar", check=False).strip()
-    if not raw or raw == "auto":
+    if not raw:
         return "#"
+    if raw == "auto":
+        detected = _detect_comment_char_from_message(message_text or "")
+        return detected or "#"
     return raw[0]
 
 
+def _detect_comment_char_from_message(message_text: str) -> str | None:
+    suffix_block = _comment_suffix_block(message_text)
+    if suffix_block is None:
+        return None
+    marker, block = suffix_block
+    if any(any(line.startswith(prefix) for prefix in AUTO_COMMENT_HINTS) for line in block):
+        return marker
+    if any(":" in line for line in block):
+        return marker
+    if any(not line for line in block):
+        return marker
+    if any("\t" in line for line in block):
+        return marker
+    return None
+
+
+def _comment_suffix_block(message_text: str) -> tuple[str, list[str]] | None:
+    marker: str | None = None
+    block: list[str] = []
+    for raw_line in reversed(message_text.splitlines()):
+        if not raw_line.strip():
+            if block:
+                break
+            continue
+        stripped = raw_line.lstrip()
+        current_marker = stripped[:1]
+        if not current_marker:
+            if block:
+                break
+            continue
+        marker_char = current_marker[0]
+        remainder = stripped[1:]
+        if marker_char.isalnum() or marker_char in {"_", "-", "*"}:
+            if block:
+                break
+            continue
+        if remainder and not remainder[:1].isspace():
+            if block:
+                break
+            continue
+        if marker is None:
+            marker = marker_char
+        elif marker_char != marker:
+            break
+        block.append(remainder.lstrip())
+
+    if not marker or len(block) < 2:
+        return None
+    return marker, list(reversed(block))
+
+
 def pending_commit_parent_count(repo: Path) -> int:
-    head_exists = bool(run_git(repo, "rev-parse", "-q", "--verify", "HEAD", check=False).strip())
     merge_head_raw = run_git(repo, "rev-parse", "--git-path", "MERGE_HEAD", check=False).strip()
     merge_parent_count = 0
     if merge_head_raw:
@@ -271,7 +347,7 @@ def pending_commit_parent_count(repo: Path) -> int:
             )
     if merge_parent_count:
         return 1 + merge_parent_count
-    return 1 if head_exists else 0
+    return 1 if head_exists(repo) else 0
 
 
 def _keywords_from_files(files: list[str]) -> list[str]:

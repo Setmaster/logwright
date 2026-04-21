@@ -16,6 +16,7 @@ from logwright.app import (
     heuristic_analysis,
     heuristic_commit_message,
     install_commit_msg_hook,
+    interactive_write_selection,
     pending_commit_record,
     render_analysis_report,
     render_commit_check_report,
@@ -23,9 +24,9 @@ from logwright.app import (
     render_reword_plan,
     render_write_preview,
 )
-from logwright.cli import build_parser, main
+from logwright.cli import _resolve_env_repo_path, build_parser, main
 from logwright.env import load_env_file
-from logwright.gittools import git_dir, git_path, run_git
+from logwright.gittools import GitError, git_dir, git_path, run_git
 from logwright.models import (
     AnalysisReport,
     AnalysisResult,
@@ -192,6 +193,57 @@ class LogwrightCliTests(unittest.TestCase):
         self.assertEqual(0, context.exception.code)
         self.assertEqual(f"logwright {__version__}\n", output.getvalue())
 
+    def test_write_mode_rejects_json_flag(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as context:
+                main(["--write", "--json"])
+        self.assertEqual(2, context.exception.code)
+        self.assertIn("--json is not supported with --write", stderr.getvalue())
+
+    def test_write_mode_rejects_commit_with_print_only(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as context:
+                main(["--write", "--print-only", "--commit"])
+        self.assertEqual(2, context.exception.code)
+        self.assertIn("--commit cannot be used together with --print-only", stderr.getvalue())
+
+    def test_resolve_env_repo_path_uses_repo_root_for_nested_path(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            nested = repo / "nested" / "child"
+            init_test_repo(repo)
+            nested.mkdir(parents=True)
+            self.assertEqual(repo, _resolve_env_repo_path(nested, allow_non_git=False))
+
+    def test_help_groups_mode_specific_flags(self) -> None:
+        help_text = build_parser().format_help()
+        self.assertIn("Modes:", help_text)
+        self.assertIn("Analyze options:", help_text)
+        self.assertIn("Write options:", help_text)
+        self.assertIn("Commit-msg and hook options:", help_text)
+        self.assertIn("Examples:", help_text)
+
+    def test_write_mode_requires_interactive_terminal_without_print_only(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            init_test_repo(repo)
+            (repo / "README.md").write_text("hello\n", encoding="utf-8")
+            __import__("subprocess").run(
+                ["git", "add", "README.md"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            stderr = io.StringIO()
+            with patch("sys.stdin.isatty", return_value=False), redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as context:
+                    main(["--write", "--repo", str(repo)])
+        self.assertEqual(2, context.exception.code)
+        self.assertIn("--write requires an interactive terminal", stderr.getvalue())
+
 
 class LogwrightReportTests(unittest.TestCase):
     def test_build_reword_plan_orders_commits_oldest_first(self) -> None:
@@ -331,6 +383,79 @@ class LogwrightReportTests(unittest.TestCase):
         self.assertNotIn("Fallback reasons:", rendered)
         self.assertIn("Model tokens: in=0, out=0", rendered)
 
+    def test_render_analysis_report_shows_middle_bucket(self) -> None:
+        report = AnalysisReport(
+            repo_id="https://example.com/repo.git",
+            repo_path="/tmp/repo",
+            style=build_style(),
+            results=[
+                AnalysisResult(
+                    sha="abc1234",
+                    subject="docs: update readme",
+                    score=6,
+                    confidence="medium",
+                    style_fit=7,
+                    diff_alignment=6,
+                    classification="mixed",
+                    summary="Message references at least one changed area.",
+                    strengths=["Readable."],
+                    issues=[],
+                    reason_codes=["partial_diff_alignment"],
+                    better_message="docs: update readme",
+                    needs_human_review=True,
+                )
+            ],
+            usage=UsageStats(provider="anthropic", model="claude-sonnet-4-6"),
+            scanned_commits=1,
+        )
+        rendered = render_analysis_report(report)
+        self.assertIn("COMMITS IN THE MIDDLE", rendered)
+        self.assertIn('abc1234 "docs: update readme"', rendered)
+
+    def test_render_analysis_report_provider_line_shows_fallback(self) -> None:
+        usage = UsageStats(provider="openai", model="gpt-5.4-mini", fallbacks=1)
+        usage.add_fallback_reason("HTTP 503: overloaded")
+        report = AnalysisReport(
+            repo_id="https://example.com/repo.git",
+            repo_path="/tmp/repo",
+            style=build_style(),
+            results=[],
+            usage=usage,
+            scanned_commits=0,
+        )
+        rendered = render_analysis_report(report)
+        self.assertIn("Provider: openai (gpt-5.4-mini), fell back to heuristic", rendered)
+
+    def test_render_analysis_report_keeps_special_cases_out_of_bad_bucket(self) -> None:
+        report = AnalysisReport(
+            repo_id="https://example.com/repo.git",
+            repo_path="/tmp/repo",
+            style=build_style(),
+            results=[
+                AnalysisResult(
+                    sha="merge123",
+                    subject="Merge branch 'main'",
+                    score=None,
+                    confidence="high",
+                    style_fit=None,
+                    diff_alignment=None,
+                    classification="special_case",
+                    summary="Merge commits are reported separately.",
+                    strengths=[],
+                    issues=[],
+                    reason_codes=[],
+                    better_message="",
+                    needs_human_review=False,
+                    special_case="merge",
+                )
+            ],
+            usage=UsageStats(provider="heuristic", model="heuristic"),
+            scanned_commits=1,
+        )
+        rendered = render_analysis_report(report)
+        self.assertIn("SPECIAL CASES", rendered)
+        self.assertNotIn("Score: None/10", rendered)
+
     def test_usage_stats_to_dict_includes_estimated_cost(self) -> None:
         usage = UsageStats(provider="openai", model="gpt-5.4-mini")
         usage.add_tokens(1_000, 2_000)
@@ -419,6 +544,131 @@ class LogwrightPreCommitTests(unittest.TestCase):
             self.assertEqual("wip", record.subject)
             self.assertEqual("", record.body)
 
+    def test_pending_commit_record_resolves_auto_comment_char_from_message(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            subprocess = __import__("subprocess")
+            init_test_repo(repo)
+            subprocess.run(
+                ["git", "config", "core.commentChar", "auto"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            (repo / "README.md").write_text("hello\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
+            record = pending_commit_record(
+                repo,
+                (
+                    "#123 keep hash subject\n\n"
+                    "Body line.\n"
+                    "; Please enter the commit message for your changes.\n"
+                    "; On branch main\n"
+                ),
+            )
+            self.assertEqual("#123 keep hash subject", record.subject)
+            self.assertEqual("Body line.", record.body)
+
+    def test_pending_commit_record_detects_auto_comment_suffix_block_without_english_hints(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            subprocess = __import__("subprocess")
+            init_test_repo(repo)
+            subprocess.run(
+                ["git", "config", "core.commentChar", "auto"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            (repo / "README.md").write_text("hello\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
+            record = pending_commit_record(
+                repo,
+                (
+                    "#123 keep hash subject\n\n"
+                    "Body line.\n"
+                    ";\n"
+                    ";\tmodified: README.md\n"
+                    ";\tmodified: notes.txt\n"
+                ),
+            )
+            self.assertEqual("#123 keep hash subject", record.subject)
+            self.assertEqual("Body line.", record.body)
+
+    def test_pending_commit_record_ignores_user_hint_like_body_before_auto_comment_block(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            subprocess = __import__("subprocess")
+            init_test_repo(repo)
+            subprocess.run(
+                ["git", "config", "core.commentChar", "auto"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            (repo / "README.md").write_text("hello\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
+            record = pending_commit_record(
+                repo,
+                (
+                    "#123 keep hash subject\n\n"
+                    "# Date: 2026-04-21 release marker\n"
+                    "Body line.\n"
+                    "; Please enter the commit message for your changes.\n"
+                    "; On branch main\n"
+                ),
+            )
+            self.assertEqual("#123 keep hash subject", record.subject)
+            self.assertEqual("# Date: 2026-04-21 release marker\nBody line.", record.body)
+
+    def test_pending_commit_record_handles_empty_initial_commit_without_head(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            init_test_repo(repo)
+            record = pending_commit_record(repo, "chore: bootstrap repo\n")
+            self.assertEqual("chore: bootstrap repo", record.subject)
+            self.assertEqual(0, record.parent_count)
+            self.assertEqual([], record.files)
+            self.assertEqual("", record.patch_excerpt)
+
+    def test_pending_commit_record_uses_empty_context_for_allow_empty_commit_with_history(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            subprocess = __import__("subprocess")
+            init_test_repo(repo, configure_user=True)
+            (repo / "README.md").write_text("hello\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "docs: add readme"], cwd=repo, check=True, capture_output=True, text=True)
+            record = pending_commit_record(repo, "chore: record release marker\n")
+            self.assertEqual("chore: record release marker", record.subject)
+            self.assertEqual(1, record.parent_count)
+            self.assertEqual([], record.files)
+            self.assertEqual("", record.patch_excerpt)
+
+    def test_pending_commit_record_uses_head_context_for_amend_buffer(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            subprocess = __import__("subprocess")
+            init_test_repo(repo, configure_user=True)
+            (repo / "README.md").write_text("hello\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "docs: add readme"], cwd=repo, check=True, capture_output=True, text=True)
+            record = pending_commit_record(
+                repo,
+                (
+                    "docs: revise readme\n\n"
+                    "# Data: Tue Apr 21 09:46:17 2026 -0400\n"
+                    "# Em branch main\n"
+                ),
+            )
+            self.assertEqual("docs: revise readme", record.subject)
+            self.assertEqual(1, record.parent_count)
+            self.assertEqual(["README.md"], record.files)
+            self.assertIn("README", record.patch_excerpt)
+
     def test_check_pending_commit_message_uses_heuristics_without_provider(self) -> None:
         with TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)
@@ -447,7 +697,10 @@ class LogwrightPreCommitTests(unittest.TestCase):
             (repo / "README.md").write_text("hello\n", encoding="utf-8")
             subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
             subprocess.run(["git", "commit", "-m", "docs: add readme"], cwd=repo, check=True, capture_output=True, text=True)
-            message_file.write_text("docs: add readme\n", encoding="utf-8")
+            message_file.write_text(
+                "docs: add readme\n\n# Date: Tue Apr 21 09:46:17 2026 -0400\n# On branch main\n",
+                encoding="utf-8",
+            )
             report = check_pending_commit_message(
                 repo_path=repo,
                 message_file=message_file,
@@ -457,7 +710,26 @@ class LogwrightPreCommitTests(unittest.TestCase):
             )
             self.assertTrue(report.passed)
             self.assertEqual("docs: add readme", report.result.subject)
-            self.assertIn("README", report.result.better_message)
+
+    def test_check_pending_commit_message_does_not_reuse_head_diff_for_same_message_empty_commit(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            message_file = repo / "COMMIT_EDITMSG"
+            subprocess = __import__("subprocess")
+            init_test_repo(repo, configure_user=True)
+            (repo / "README.md").write_text("hello\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "docs: add readme"], cwd=repo, check=True, capture_output=True, text=True)
+            message_file.write_text("docs: add readme\n", encoding="utf-8")
+            report = check_pending_commit_message(
+                repo_path=repo,
+                message_file=message_file,
+                provider_name="heuristic",
+                model=None,
+                min_score=5,
+            )
+            self.assertEqual("docs: add readme", report.result.subject)
+            self.assertNotIn("README", report.result.better_message)
 
     def test_render_commit_check_report_keeps_blank_lines_clean(self) -> None:
         report = CommitCheckReport(
@@ -487,6 +759,65 @@ class LogwrightPreCommitTests(unittest.TestCase):
         self.assertIn("Suggested message: docs: update readme", rendered)
         self.assertIn("\n\n                   - update README.md", rendered)
         self.assertNotIn("\n                   \n", rendered)
+
+    def test_render_commit_check_report_uses_first_distinct_main_issue(self) -> None:
+        report = CommitCheckReport(
+            repo_id="/tmp/repo",
+            repo_path="/tmp/repo",
+            style=build_style(),
+            result=AnalysisResult(
+                sha="STAGED",
+                subject="wip",
+                score=2,
+                confidence="high",
+                style_fit=4,
+                diff_alignment=2,
+                classification="needs_work",
+                summary="Subject is too generic to explain what changed.",
+                strengths=[],
+                issues=[
+                    "Subject is too generic to explain what changed.",
+                    "Subject is too short to be helpful.",
+                ],
+                reason_codes=["generic_subject"],
+                better_message="docs: update readme",
+                needs_human_review=False,
+            ),
+            usage=UsageStats(provider="heuristic", model="heuristic"),
+            min_score=5,
+            passed=False,
+        )
+        rendered = render_commit_check_report(report)
+        self.assertIn("Summary: Subject is too generic to explain what changed.", rendered)
+        self.assertIn("Main issue: Subject is too short to be helpful.", rendered)
+
+    def test_render_commit_check_report_omits_suggested_message_on_pass(self) -> None:
+        report = CommitCheckReport(
+            repo_id="/tmp/repo",
+            repo_path="/tmp/repo",
+            style=build_style(),
+            result=AnalysisResult(
+                sha="STAGED",
+                subject="docs: add readme",
+                score=8,
+                confidence="high",
+                style_fit=8,
+                diff_alignment=8,
+                classification="well_written",
+                summary="Clear and specific.",
+                strengths=["Specific subject"],
+                issues=[],
+                reason_codes=[],
+                better_message="docs: update readme",
+                needs_human_review=False,
+            ),
+            usage=UsageStats(provider="heuristic", model="heuristic"),
+            min_score=5,
+            passed=True,
+        )
+        rendered = render_commit_check_report(report)
+        self.assertIn("Result: pass (8/10, threshold 5)", rendered)
+        self.assertNotIn("Suggested message:", rendered)
 
     def test_render_write_preview_includes_usage_details(self) -> None:
         usage = UsageStats(provider="openai", model="gpt-5.4-mini", fallbacks=1)
@@ -552,6 +883,159 @@ class LogwrightPreCommitTests(unittest.TestCase):
         self.assertNotIn("Provider fallbacks:", preview)
         self.assertNotIn("Fallback reasons:", preview)
         self.assertIn("Model tokens: in=0, out=0", preview)
+
+    def test_interactive_write_selection_uses_explicit_custom_path(self) -> None:
+        variants = [
+            SuggestionVariant(label="terse", message="docs: terse", why="Short."),
+            SuggestionVariant(label="standard", message="docs: standard", why="Balanced."),
+            SuggestionVariant(label="detailed", message="docs: detailed", why="Long."),
+        ]
+        with patch("builtins.input", side_effect=["c", "seed text", "n"]), patch(
+            "logwright.app.open_in_editor",
+            return_value="docs: custom",
+        ) as open_editor:
+            result = interactive_write_selection(
+                repo_path=Path("/tmp/repo"),
+                variants=variants,
+                commit_now=False,
+            )
+        self.assertEqual(("docs: custom", False), result)
+        open_editor.assert_called_once_with("seed text")
+
+    def test_interactive_write_selection_reprompts_on_invalid_choice(self) -> None:
+        variants = [
+            SuggestionVariant(label="terse", message="docs: terse", why="Short."),
+            SuggestionVariant(label="standard", message="docs: standard", why="Balanced."),
+            SuggestionVariant(label="detailed", message="docs: detailed", why="Long."),
+        ]
+        with patch("builtins.input", side_effect=["bogus", "q"]), patch(
+            "logwright.app.open_in_editor",
+        ) as open_editor, redirect_stdout(io.StringIO()):
+            result = interactive_write_selection(
+                repo_path=Path("/tmp/repo"),
+                variants=variants,
+                commit_now=False,
+            )
+        self.assertEqual((None, False), result)
+        open_editor.assert_not_called()
+
+    def test_interactive_write_selection_marks_commit_as_skipped(self) -> None:
+        variants = [
+            SuggestionVariant(label="terse", message="docs: terse", why="Short."),
+            SuggestionVariant(label="standard", message="docs: standard", why="Balanced."),
+            SuggestionVariant(label="detailed", message="docs: detailed", why="Long."),
+        ]
+        with patch("builtins.input", side_effect=["", "n"]):
+            result = interactive_write_selection(
+                repo_path=Path("/tmp/repo"),
+                variants=variants,
+                commit_now=False,
+            )
+        self.assertEqual(("docs: standard", False), result)
+
+    def test_interactive_write_selection_edits_before_reconfirming(self) -> None:
+        variants = [
+            SuggestionVariant(label="terse", message="docs: terse", why="Short."),
+            SuggestionVariant(label="standard", message="docs: standard", why="Balanced."),
+            SuggestionVariant(label="detailed", message="docs: detailed", why="Long."),
+        ]
+        with patch("builtins.input", side_effect=["1", "e", "n"]), patch(
+            "logwright.app.open_in_editor",
+            return_value="docs: edited",
+        ) as open_editor, patch("logwright.app.run_commit") as run_commit:
+            result = interactive_write_selection(
+                repo_path=Path("/tmp/repo"),
+                variants=variants,
+                commit_now=False,
+            )
+        self.assertEqual(("docs: edited", False), result)
+        open_editor.assert_called_once_with("docs: terse")
+        run_commit.assert_not_called()
+
+    def test_interactive_write_selection_reports_eof_cleanly(self) -> None:
+        variants = [
+            SuggestionVariant(label="terse", message="docs: terse", why="Short."),
+            SuggestionVariant(label="standard", message="docs: standard", why="Balanced."),
+            SuggestionVariant(label="detailed", message="docs: detailed", why="Long."),
+        ]
+        with patch("builtins.input", side_effect=EOFError):
+            with self.assertRaisesRegex(
+                GitError,
+                "interactive write mode requires a terminal",
+            ):
+                interactive_write_selection(
+                    repo_path=Path("/tmp/repo"),
+                    variants=variants,
+                    commit_now=False,
+                )
+
+    def test_interactive_write_selection_reports_custom_seed_eof_cleanly(self) -> None:
+        variants = [
+            SuggestionVariant(label="terse", message="docs: terse", why="Short."),
+            SuggestionVariant(label="standard", message="docs: standard", why="Balanced."),
+            SuggestionVariant(label="detailed", message="docs: detailed", why="Long."),
+        ]
+        with patch("builtins.input", side_effect=["c", EOFError]):
+            with self.assertRaisesRegex(
+                GitError,
+                "interactive write mode requires a terminal",
+            ):
+                interactive_write_selection(
+                    repo_path=Path("/tmp/repo"),
+                    variants=variants,
+                    commit_now=False,
+                )
+
+    def test_interactive_write_selection_reports_keyboard_interrupt_cleanly(self) -> None:
+        variants = [
+            SuggestionVariant(label="terse", message="docs: terse", why="Short."),
+            SuggestionVariant(label="standard", message="docs: standard", why="Balanced."),
+            SuggestionVariant(label="detailed", message="docs: detailed", why="Long."),
+        ]
+        with patch("builtins.input", side_effect=KeyboardInterrupt):
+            with self.assertRaisesRegex(GitError, "interactive write mode cancelled"):
+                interactive_write_selection(
+                    repo_path=Path("/tmp/repo"),
+                    variants=variants,
+                    commit_now=False,
+                )
+
+    def test_main_reports_editor_failure_cleanly(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            subprocess = __import__("subprocess")
+            init_test_repo(repo)
+            (repo / "README.md").write_text("hello\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
+            stderr = io.StringIO()
+            with patch("builtins.input", side_effect=["e"]), patch(
+                "sys.stdin.isatty",
+                return_value=True,
+            ), patch.dict("os.environ", {"EDITOR": "false"}, clear=False), redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as context:
+                    main(["--write", "--repo", str(repo)])
+        self.assertEqual(2, context.exception.code)
+        self.assertIn("editor exited with status 1: false", stderr.getvalue())
+
+    def test_main_reports_commit_failure_cleanly(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            subprocess = __import__("subprocess")
+            init_test_repo(repo)
+            (repo / "README.md").write_text("hello\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
+            stderr = io.StringIO()
+            with patch("builtins.input", side_effect=["", "y"]), patch(
+                "sys.stdin.isatty",
+                return_value=True,
+            ), patch(
+                "logwright.app.run_commit",
+                side_effect=GitError("git commit failed with status 1"),
+            ), redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as context:
+                    main(["--write", "--repo", str(repo)])
+        self.assertEqual(2, context.exception.code)
+        self.assertIn("git commit failed with status 1", stderr.getvalue())
 
 
 class LogwrightHookInstallTests(unittest.TestCase):
@@ -652,6 +1136,20 @@ class LogwrightHookInstallTests(unittest.TestCase):
         self.assertIn("Installed commit-msg hook", rendered)
         self.assertIn("Configured local core.hooksPath: /tmp/repo/.git/hooks", rendered)
         self.assertIn("Backup: /tmp/repo/.git/hooks/commit-msg.before-logwright", rendered)
+
+    def test_render_hook_install_result_shows_actual_written_command(self) -> None:
+        rendered = render_hook_install_result(
+            HookInstallResult(
+                repo_path="/tmp/repo",
+                hook_path="/tmp/repo/.git/hooks/commit-msg",
+                provider="heuristic",
+                model=None,
+                min_score=5,
+                command='export PYTHONPATH=/tmp/src"${PYTHONPATH:+:$PYTHONPATH}"\nexec /usr/bin/python3 -m logwright --commit-msg-file "$1" --provider heuristic --min-score 5 --repo /tmp/repo',
+            )
+        )
+        self.assertIn("export PYTHONPATH=/tmp/src", rendered)
+        self.assertIn('exec /usr/bin/python3 -m logwright --commit-msg-file "$1"', rendered)
 
     def test_cli_install_hook_defaults_to_heuristic_provider(self) -> None:
         with TemporaryDirectory() as temp_dir:

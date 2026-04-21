@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-PRICING_AS_OF = "2026-04-20"
+PRICING_AS_OF = "2026-04-21"
 
 
 @dataclass(frozen=True)
@@ -25,7 +25,7 @@ MODEL_PRICING: tuple[ModelPricing, ...] = (
         canonical_model="gpt-5.4-mini",
         input_cost_per_million=0.75,
         output_cost_per_million=4.50,
-        source_url="https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+        source_url="https://openai.com/api/pricing/",
         aliases=("gpt-5.4-mini",),
         prefix_aliases=("gpt-5.4-mini-",),
     ),
@@ -34,15 +34,15 @@ MODEL_PRICING: tuple[ModelPricing, ...] = (
         canonical_model="claude-sonnet-4-6",
         input_cost_per_million=3.00,
         output_cost_per_million=15.00,
-        source_url="https://www.anthropic.com/claude/sonnet",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         aliases=("claude-sonnet-4-6",),
         prefix_aliases=("claude-sonnet-4-6-",),
     ),
     ModelPricing(
         provider="gemini",
         canonical_model="gemini-2.5-flash",
-        input_cost_per_million=0.30,
-        output_cost_per_million=2.50,
+        input_cost_per_million=0.54,
+        output_cost_per_million=4.50,
         source_url="https://ai.google.dev/gemini-api/docs/pricing",
         aliases=("gemini-2.5-flash",),
         prefix_aliases=("gemini-2.5-flash-",),
