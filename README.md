@@ -8,9 +8,9 @@ The core idea is simple: commit messages should be judged against the change its
 isolation. Daily use usually starts with `--write --print-only` or the hook. The focused demo
 below shows the companion analyze-and-reword flow.
 
-![logwright terminal demo](https://raw.githubusercontent.com/Setmaster/logwright/v0.1.0/docs/logwright-demo.gif)
+![logwright terminal demo](https://raw.githubusercontent.com/Setmaster/logwright/v0.1.1/docs/logwright-demo.gif)
 
-[Demo Transcript](https://github.com/Setmaster/logwright/blob/v0.1.0/docs/demo.md) · [Roadmap](https://github.com/Setmaster/logwright/blob/v0.1.0/ROADMAP.md) · [License](https://github.com/Setmaster/logwright/blob/v0.1.0/LICENSE)
+[Demo Transcript](https://github.com/Setmaster/logwright/blob/v0.1.1/docs/demo.md) · [Roadmap](https://github.com/Setmaster/logwright/blob/v0.1.1/ROADMAP.md) · [License](https://github.com/Setmaster/logwright/blob/v0.1.1/LICENSE)
 
 ## Highlights
 
@@ -30,7 +30,7 @@ Python 3.11+ and `git` are required.
 Install directly from GitHub:
 
 ```bash
-pip install git+https://github.com/Setmaster/logwright.git@v0.1.0
+pip install git+https://github.com/Setmaster/logwright.git@v0.1.1
 ```
 
 Or install from a local checkout:
@@ -178,7 +178,7 @@ logwright --analyze --provider gemini --model gemini-2.5-flash
 
 ## Verified provider coverage (2026-04-21)
 
-Representative transcripts live in the [Demo Transcript](https://github.com/Setmaster/logwright/blob/v0.1.0/docs/demo.md). The current build was exercised on these provider paths:
+Representative transcripts live in the [Demo Transcript](https://github.com/Setmaster/logwright/blob/v0.1.1/docs/demo.md). The current build was exercised on these provider paths:
 
 - Anthropic: analyze, write
 - OpenAI: analyze, write
@@ -232,7 +232,7 @@ Model tokens: in=1456, out=490
 Estimated API cost: $0.0117 (standard text-token pricing for claude-sonnet-4-6)
 ```
 
-See the [Demo Transcript](https://github.com/Setmaster/logwright/blob/v0.1.0/docs/demo.md) for
+See the [Demo Transcript](https://github.com/Setmaster/logwright/blob/v0.1.1/docs/demo.md) for
 broader Anthropic, OpenAI, Gemini, hook, and commit-msg flows.
 
 ## Hook usage
@@ -354,4 +354,4 @@ python3 -m logwright --help
 
 ## License
 
-MIT. See [LICENSE](https://github.com/Setmaster/logwright/blob/v0.1.0/LICENSE).
+MIT. See [LICENSE](https://github.com/Setmaster/logwright/blob/v0.1.1/LICENSE).
