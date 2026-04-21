@@ -10,11 +10,11 @@ from typing import Any
 
 
 def default_openai_model() -> str:
-    return os.environ.get("LOGWRIGHT_OPENAI_MODEL", "gpt-4o-mini")
+    return os.environ.get("LOGWRIGHT_OPENAI_MODEL", "gpt-5.4-mini")
 
 
 def default_anthropic_model() -> str:
-    return os.environ.get("LOGWRIGHT_ANTHROPIC_MODEL", "claude-3-7-sonnet-latest")
+    return os.environ.get("LOGWRIGHT_ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
 
 def default_gemini_model() -> str:

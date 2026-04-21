@@ -7,7 +7,12 @@ from unittest.mock import patch
 from logwright.app import detect_low_signal_subject, heuristic_analysis, heuristic_commit_message
 from logwright.env import load_env_file
 from logwright.models import CommitRecord, RepoStyle
-from logwright.providers import GeminiProvider, resolve_provider
+from logwright.providers import (
+    GeminiProvider,
+    default_anthropic_model,
+    default_openai_model,
+    resolve_provider,
+)
 
 
 def build_style() -> RepoStyle:
@@ -62,6 +67,11 @@ class LogwrightHeuristicTests(unittest.TestCase):
 
 
 class LogwrightEnvTests(unittest.TestCase):
+    def test_default_models_match_documented_defaults(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual("claude-sonnet-4-6", default_anthropic_model())
+            self.assertEqual("gpt-5.4-mini", default_openai_model())
+
     def test_load_env_file_sets_missing_values_only(self) -> None:
         with TemporaryDirectory() as temp_dir:
             env_path = Path(temp_dir) / ".env"

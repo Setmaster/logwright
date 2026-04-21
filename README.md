@@ -83,15 +83,15 @@ export GEMINI_API_KEY=...
 Optional model overrides:
 
 ```bash
-export LOGWRIGHT_ANTHROPIC_MODEL=claude-3-7-sonnet-latest
-export LOGWRIGHT_OPENAI_MODEL=gpt-4o-mini
+export LOGWRIGHT_ANTHROPIC_MODEL=claude-sonnet-4-6
+export LOGWRIGHT_OPENAI_MODEL=gpt-5.4-mini
 export LOGWRIGHT_GEMINI_MODEL=gemini-2.5-flash
 ```
 
 Or pass a model explicitly:
 
 ```bash
-logwright --analyze --provider openai --model gpt-4o-mini
+logwright --analyze --provider openai --model gpt-5.4-mini
 logwright --analyze --provider gemini --model gemini-2.5-flash
 ```
 
