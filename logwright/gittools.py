@@ -1,0 +1,275 @@
+from __future__ import annotations
+
+import re
+import shutil
+import subprocess
+import tempfile
+from collections import Counter
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Iterator
+
+from logwright.models import ChangeSummary, CommitRecord, RepoStyle
+
+
+CONVENTIONAL_TYPES = (
+    "feat",
+    "fix",
+    "docs",
+    "style",
+    "refactor",
+    "perf",
+    "test",
+    "build",
+    "ci",
+    "chore",
+    "revert",
+)
+CONVENTIONAL_RE = re.compile(
+    r"^(?P<type>feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)"
+    r"(?P<scope>\([^)]+\))?(?P<bang>!)?:\s+\S"
+)
+WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,}")
+
+
+class GitError(RuntimeError):
+    pass
+
+
+def require_git() -> None:
+    if shutil.which("git") is None:
+        raise GitError("git is required but was not found in PATH")
+
+
+def run_git(repo: Path, *args: str, check: bool = True) -> str:
+    require_git()
+    process = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if check and process.returncode != 0:
+        stderr = process.stderr.strip() or process.stdout.strip()
+        raise GitError(f"git {' '.join(args)} failed: {stderr}")
+    return process.stdout
+
+
+def ensure_git_repo(path: Path) -> Path:
+    top_level = run_git(path, "rev-parse", "--show-toplevel").strip()
+    return Path(top_level)
+
+
+def infer_repo_id(repo: Path) -> str:
+    remote = run_git(repo, "remote", "get-url", "origin", check=False).strip()
+    if remote:
+        return remote
+    return str(repo.resolve())
+
+
+@contextmanager
+def cloned_remote_repo(url: str, depth: int) -> Iterator[Path]:
+    tempdir = Path(tempfile.mkdtemp(prefix="logwright-"))
+    try:
+        subprocess.run(
+            ["git", "clone", "--quiet", "--depth", str(depth), url, str(tempdir)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        yield tempdir
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.strip() or exc.stdout.strip()
+        raise GitError(f"git clone failed: {stderr}") from exc
+    finally:
+        shutil.rmtree(tempdir, ignore_errors=True)
+
+
+def get_recent_commit_shas(repo: Path, limit: int) -> list[str]:
+    output = run_git(repo, "rev-list", f"--max-count={limit}", "HEAD").strip()
+    return [line for line in output.splitlines() if line]
+
+
+def _truncate_section(lines: list[str], max_lines: int) -> list[str]:
+    if len(lines) <= max_lines:
+        return lines
+    keep = lines[: max_lines - 1]
+    keep.append(f"... ({len(lines) - len(keep)} more lines omitted)")
+    return keep
+
+
+def excerpt_patch(patch_text: str, *, max_files: int = 6, max_lines_per_file: int = 28) -> str:
+    lines = patch_text.splitlines()
+    if not lines:
+        return ""
+    sections: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if line.startswith("diff --git ") and current:
+            sections.append(current)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        sections.append(current)
+    if not sections:
+        return "\n".join(_truncate_section(lines, max_lines_per_file))
+
+    trimmed: list[str] = []
+    for section in sections[:max_files]:
+        trimmed.extend(_truncate_section(section, max_lines_per_file))
+    omitted = len(sections) - min(len(sections), max_files)
+    if omitted > 0:
+        trimmed.append(f"... ({omitted} more file diffs omitted)")
+    return "\n".join(trimmed)
+
+
+def get_commit_record(repo: Path, sha: str) -> CommitRecord:
+    fmt = "%H%x1f%s%x1f%b%x1f%an%x1f%ae%x1f%P"
+    raw_meta = run_git(repo, "show", "--quiet", f"--format={fmt}", sha).split("\x1f")
+    if len(raw_meta) < 6:
+        raise GitError(f"unexpected git show metadata for {sha}")
+    _, subject, body, author_name, author_email, parents = raw_meta[:6]
+    files_output = run_git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", sha)
+    stats_text = run_git(repo, "show", "--stat", "--format=", "--summary", sha).strip()
+    patch = run_git(repo, "show", "--format=", "--unified=2", "--no-ext-diff", sha)
+    files = [line for line in files_output.splitlines() if line]
+    parent_count = len([part for part in parents.split() if part])
+    return CommitRecord(
+        sha=sha,
+        subject=subject.strip(),
+        body=body.strip(),
+        author_name=author_name.strip(),
+        author_email=author_email.strip(),
+        parent_count=parent_count,
+        files=files,
+        stats_text=stats_text,
+        patch_excerpt=excerpt_patch(patch),
+    )
+
+
+def detect_repo_style(repo: Path, sample_size: int = 25) -> RepoStyle:
+    raw = run_git(repo, "log", f"--max-count={sample_size}", "--format=%s%x1f%b%x1e")
+    entries = [entry for entry in raw.split("\x1e") if entry.strip()]
+    conventional = 0
+    scoped = 0
+    body_count = 0
+    type_counter: Counter[str] = Counter()
+    subject_lengths: list[int] = []
+    for entry in entries:
+        parts = entry.split("\x1f", 1)
+        subject = parts[0].strip()
+        body = parts[1].strip() if len(parts) > 1 else ""
+        if not subject:
+            continue
+        subject_lengths.append(len(subject))
+        match = CONVENTIONAL_RE.match(subject)
+        if match:
+            conventional += 1
+            if match.group("scope"):
+                scoped += 1
+            type_counter[match.group("type")] += 1
+        if body:
+            body_count += 1
+
+    sample_count = max(len(subject_lengths), 1)
+    conventional_rate = conventional / sample_count
+    scoped_rate = scoped / sample_count
+    body_rate = body_count / sample_count
+    avg_subject_length = sum(subject_lengths) / sample_count if subject_lengths else 0
+
+    if conventional_rate >= 0.7 and scoped_rate >= 0.5:
+        description = "Conventional Commits with scopes"
+    elif conventional_rate >= 0.7:
+        description = "Conventional Commits"
+    elif body_rate >= 0.45:
+        description = "Free-form subjects with frequent bodies"
+    elif avg_subject_length <= 40:
+        description = "Short-form free-form subjects"
+    else:
+        description = "Free-form commit messages"
+
+    dominant_types = [name for name, _ in type_counter.most_common(3)]
+    return RepoStyle(
+        description=description,
+        conventional_commits=conventional_rate >= 0.7,
+        scoped_commits=scoped_rate >= 0.5,
+        body_rate=body_rate,
+        sample_size=sample_count,
+        dominant_types=dominant_types,
+    )
+
+
+def _keywords_from_files(files: list[str]) -> list[str]:
+    tokens: Counter[str] = Counter()
+    ignored = {
+        "src",
+        "lib",
+        "test",
+        "tests",
+        "spec",
+        "specs",
+        "main",
+        "index",
+        "init",
+        "logwright",
+        "github",
+        "workflows",
+    }
+    for file_path in files:
+        for part in re.split(r"[/_.-]+", file_path):
+            lowered = part.lower()
+            if len(lowered) < 3 or lowered.isdigit() or lowered in ignored:
+                continue
+            tokens[lowered] += 1
+    return [token for token, _ in tokens.most_common(8)]
+
+
+def keywords_from_diff(files: list[str], patch_excerpt: str) -> list[str]:
+    tokens = Counter(_keywords_from_files(files))
+    for match in re.finditer(
+        r"^[+\-]\s*(?:def|class|function|const|let|var)?\s*([A-Za-z_][A-Za-z0-9_]*)",
+        patch_excerpt,
+        re.MULTILINE,
+    ):
+        token = match.group(1).lower()
+        if len(token) >= 3:
+            tokens[token] += 2
+    return [token for token, _ in tokens.most_common(10)]
+
+
+def staged_change_summary(repo: Path) -> ChangeSummary:
+    files_output = run_git(repo, "diff", "--cached", "--name-only").strip()
+    files = [line for line in files_output.splitlines() if line]
+    if not files:
+        raise GitError("no staged changes found")
+
+    numstat_output = run_git(repo, "diff", "--cached", "--numstat").strip()
+    additions = 0
+    deletions = 0
+    for line in numstat_output.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        add_raw, del_raw = parts[0], parts[1]
+        additions += 0 if add_raw == "-" else int(add_raw)
+        deletions += 0 if del_raw == "-" else int(del_raw)
+
+    stats_text = run_git(repo, "diff", "--cached", "--stat").strip()
+    patch = run_git(repo, "diff", "--cached", "--unified=2", "--no-ext-diff")
+    patch_excerpt = excerpt_patch(patch)
+    keywords = keywords_from_diff(files, patch_excerpt)
+    return ChangeSummary(
+        files=files,
+        file_count=len(files),
+        additions=additions,
+        deletions=deletions,
+        stats_text=stats_text,
+        patch_excerpt=patch_excerpt,
+        keywords=keywords,
+    )
+
+
+def text_keywords(text: str) -> list[str]:
+    return [match.group(0).lower() for match in WORD_RE.finditer(text)]
