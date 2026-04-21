@@ -3,6 +3,45 @@
 These are real terminal transcripts captured from the current implementation. Output varies by
 provider, model, and repo contents, but the flows below reflect the shipped behavior.
 
+## Focused README demo
+
+This is the same narrow flow shown in the README GIF: analyze a vague commit against its diff with
+the default provider, then surface a reword plan.
+
+```text
+$ logwright --analyze --repo /tmp/logwright-gif-demo --limit 2 --no-cache
+Analyzed 2 commits in /tmp/logwright-gif-demo
+Detected style: Short-form free-form subjects
+Provider: anthropic (claude-sonnet-4-6)
+
+COMMITS THAT NEED WORK
+- 8b98e7f "fixed bug"
+  Score: 2/10
+  Issue: The message 'fixed bug' is completely uninformative and does not describe what was actually done. The diff shows a new file src/auth.py being created with a validate_token function — this is not a bug fix, it's a new feature addition. The message is both factually wrong and too vague.
+  Better: add token validation function to auth module
+
+WELL-WRITTEN COMMITS
+No commits landed in the strongest bucket yet.
+
+REWORD PLAN
+Start with: git rebase -i 8b98e7f^
+Mark these commits as `reword` in the interactive list:
+- reword 8b98e7f fixed bug
+Suggested replacements:
+- 8b98e7f -> add token validation function to auth module
+
+YOUR STATS
+Average score: 4.0/10
+Vague commits: 1
+Very short commits: 1
+Cache hits: 0
+Cache misses: 2
+Provider fallbacks: 0
+Fallback reasons: none
+Model tokens: in=1452, out=469
+Estimated API cost: $0.0114 (standard text-token pricing for claude-sonnet-4-6)
+```
+
 ## Hook install
 
 ```text
