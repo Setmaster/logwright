@@ -2,7 +2,9 @@
 
 `logwright` is a CLI tool for grading git commit messages against their actual diffs and helping write better ones from staged changes.
 
-See the [Demo Transcript](docs/demo.md) for real terminal runs covering analysis mode, write mode, and commit-msg validation.
+Focused demo: analyze a vague commit against its diff and generate a reword plan.
+
+![logwright terminal demo](docs/logwright-demo.gif)
 
 [Demo Transcript](docs/demo.md) · [Roadmap](ROADMAP.md) · [License](LICENSE)
 
