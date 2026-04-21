@@ -5,21 +5,28 @@ long backlog. It is intentionally short and focused on product-facing work.
 
 ## Current focus
 
-- Improve provider reliability and make fallback reasons visible in CLI output.
-- Tighten the terminal experience with clearer demos, examples, and actionable reports.
-- Keep analysis grounded in the actual diff and the repo's local commit conventions.
+- Improve cost reporting beyond raw token counts.
+- Improve machine-readable reporting so CI and automation can consume results more easily.
+- Package a lightweight hook installer or template.
+
+## Recently shipped
+
+- Visible provider fallback reasons in terminal and JSON output.
+- Actionable reword plans for weak commits.
+- A hook-friendly `--commit-msg-file` mode for validating pending commit messages.
+- More reliable Gemini structured output handling with disabled thinking and transient retries.
+- A checked-in demo transcript covering analysis mode, write mode, and commit-msg validation.
+- Sharper docs-only heuristic rewrite suggestions in the no-provider path.
 
 ## Next
 
-- Generate actionable rewrite plans for weak commits, including reword-ready sequences.
-- Add a lightweight pre-commit mode for grading pending commit messages before they land.
-- Improve machine-readable reporting so CI and automation can consume results more easily.
+- Continue improving heuristic suggestions for very low-context staged diffs.
+- Continue polishing docs and examples as the CLI output evolves.
 
 ## Later
 
 - Support richer remote analysis paths for hosted repositories.
 - Add optional HTML export for sharing results outside the terminal.
-- Improve cost reporting beyond raw token counts.
 
 ## Non-goals
 

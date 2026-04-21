@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 
-CACHE_VERSION = "v1"
+CACHE_VERSION = "v2"
 
 
 def cache_root() -> Path:

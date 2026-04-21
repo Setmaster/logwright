@@ -17,10 +17,12 @@ from logwright.gittools import (
     cloned_remote_repo,
     detect_repo_style,
     ensure_git_repo,
+    git_comment_char,
     get_commit_record,
     get_recent_commit_shas,
     infer_repo_id,
     keywords_from_diff,
+    pending_commit_parent_count,
     staged_change_summary,
     text_keywords,
 )
@@ -28,6 +30,7 @@ from logwright.models import (
     AnalysisReport,
     AnalysisResult,
     ChangeSummary,
+    CommitCheckReport,
     CommitRecord,
     RepoStyle,
     SuggestionVariant,
@@ -144,7 +147,9 @@ def _determine_scope(files: list[str], keywords: list[str]) -> str:
 def _subject_fragment(kind: str, scope: str, keywords: list[str]) -> str:
     keyword = keywords[0] if keywords else scope
     if kind == "docs":
-        return f"document {keyword} usage"
+        if keyword in {"readme", "roadmap", "docs", "documentation"}:
+            return f"update {keyword}"
+        return f"document {keyword}"
     if kind == "ci":
         return f"update {scope} workflow"
     if kind == "build":
@@ -169,7 +174,10 @@ def heuristic_commit_message(
     scope = _determine_scope(files, keywords)
     fragment = _subject_fragment(kind, scope, keywords)
     if style.conventional_commits:
-        subject = f"{kind}({scope}): {fragment}"
+        if style.scoped_commits:
+            subject = f"{kind}({scope}): {fragment}"
+        else:
+            subject = f"{kind}: {fragment}"
     else:
         subject = fragment[0].upper() + fragment[1:]
 
@@ -552,8 +560,10 @@ def analyze_repo(
     cache = CacheStore()
     shas = get_recent_commit_shas(repo, limit)
     results: list[AnalysisResult] = []
+    commit_parent_counts: dict[str, int] = {}
     for sha in shas:
         commit = get_commit_record(repo, sha)
+        commit_parent_counts[sha] = commit.parent_count
         heuristic = heuristic_analysis(commit, style)
         key = cache_key(
             repo_id=repo_id,
@@ -568,26 +578,12 @@ def analyze_repo(
             results.append(AnalysisResult(**cached))
             continue
         usage.cache_misses += 1
-        final = heuristic
-        if provider and heuristic.special_case is None:
-            system_prompt, user_prompt = _analysis_prompts(commit, style, heuristic)
-            try:
-                response = provider.generate_json(
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    schema_name="commit_analysis",
-                    schema=ANALYSIS_SCHEMA,
-                )
-                _validate_analysis_payload(response.data)
-                final = _merge_results(heuristic, response.data)
-                usage.add_tokens(response.input_tokens, response.output_tokens)
-            except ProviderError:
-                usage.fallbacks += 1
-                final = heuristic
+        final = analyze_commit_record(commit=commit, style=style, provider=provider, usage=usage)
         if use_cache:
             cache.save("analysis", key, final.to_dict())
         results.append(final)
 
+    reword_plan = build_reword_plan(results, commit_parent_counts)
     return AnalysisReport(
         repo_id=repo_id,
         repo_path=str(repo),
@@ -595,7 +591,36 @@ def analyze_repo(
         results=results,
         usage=usage,
         scanned_commits=len(shas),
+        reword_plan=reword_plan,
     )
+
+
+def analyze_commit_record(
+    *,
+    commit: CommitRecord,
+    style: RepoStyle,
+    provider: BaseProvider | None,
+    usage: UsageStats,
+) -> AnalysisResult:
+    heuristic = heuristic_analysis(commit, style)
+    if not provider or heuristic.special_case is not None:
+        return heuristic
+
+    system_prompt, user_prompt = _analysis_prompts(commit, style, heuristic)
+    try:
+        response = provider.generate_json(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema_name="commit_analysis",
+            schema=ANALYSIS_SCHEMA,
+        )
+        _validate_analysis_payload(response.data)
+        usage.add_tokens(response.input_tokens, response.output_tokens)
+        return _merge_results(heuristic, response.data)
+    except ProviderError as exc:
+        usage.fallbacks += 1
+        usage.add_fallback_reason(str(exc))
+        return heuristic
 
 
 def analyze_local_or_remote(
@@ -631,6 +656,7 @@ def suggestion_variants(
     changes: ChangeSummary,
     style: RepoStyle,
     provider: BaseProvider | None,
+    usage: UsageStats,
 ) -> list[SuggestionVariant]:
     base = [
         SuggestionVariant(
@@ -675,8 +701,11 @@ def suggestion_variants(
             schema_name="commit_suggestions",
             schema=SUGGESTION_SCHEMA,
         )
+        usage.add_tokens(response.input_tokens, response.output_tokens)
         return _validate_suggestions_payload(response.data)
-    except ProviderError:
+    except ProviderError as exc:
+        usage.fallbacks += 1
+        usage.add_fallback_reason(str(exc))
         return base
 
 
@@ -723,7 +752,7 @@ def write_mode(
     print_only: bool,
     commit_now: bool,
 ) -> tuple[ChangeSummary, RepoStyle, list[SuggestionVariant], str | None]:
-    changes, style, variants, repo = prepare_write_mode(
+    changes, style, variants, _, repo = prepare_write_mode(
         repo_path=repo_path,
         provider_name=provider_name,
         model=model,
@@ -744,13 +773,79 @@ def prepare_write_mode(
     repo_path: Path,
     provider_name: str,
     model: str | None,
-) -> tuple[ChangeSummary, RepoStyle, list[SuggestionVariant], Path]:
+) -> tuple[ChangeSummary, RepoStyle, list[SuggestionVariant], UsageStats, Path]:
     repo = ensure_git_repo(repo_path)
     style = detect_repo_style(repo)
     changes = staged_change_summary(repo)
     provider = resolve_provider(provider_name, model)
-    variants = suggestion_variants(changes=changes, style=style, provider=provider)
-    return changes, style, variants, repo
+    usage = UsageStats(
+        provider=provider.name if provider else "heuristic",
+        model=provider.model if provider else "heuristic",
+    )
+    variants = suggestion_variants(changes=changes, style=style, provider=provider, usage=usage)
+    return changes, style, variants, usage, repo
+
+
+def check_pending_commit_message(
+    *,
+    repo_path: Path,
+    message_file: Path,
+    provider_name: str,
+    model: str | None,
+    min_score: int,
+) -> CommitCheckReport:
+    repo = ensure_git_repo(repo_path)
+    style = detect_repo_style(repo)
+    provider = resolve_provider(provider_name, model)
+    usage = UsageStats(
+        provider=provider.name if provider else "heuristic",
+        model=provider.model if provider else "heuristic",
+    )
+    commit = pending_commit_record(repo, message_file.read_text(encoding="utf-8"))
+    result = analyze_commit_record(commit=commit, style=style, provider=provider, usage=usage)
+    passed = result.score is None or (result.score or 0) >= min_score
+    return CommitCheckReport(
+        repo_id=infer_repo_id(repo),
+        repo_path=str(repo),
+        style=style,
+        result=result,
+        usage=usage,
+        min_score=min_score,
+        passed=passed,
+    )
+
+
+def pending_commit_record(repo: Path, message_text: str) -> CommitRecord:
+    normalized = _sanitize_commit_message(message_text, git_comment_char(repo))
+    lines = normalized.splitlines()
+    subject = lines[0].strip() if lines else ""
+    body = "\n".join(line.rstrip() for line in lines[1:]).strip()
+    try:
+        changes = staged_change_summary(repo)
+        parent_count = pending_commit_parent_count(repo)
+        files = changes.files
+        stats_text = changes.stats_text
+        patch_excerpt = changes.patch_excerpt
+    except GitError as exc:
+        if "no staged changes found" not in str(exc):
+            raise
+        head_commit = get_commit_record(repo, "HEAD")
+        parent_count = head_commit.parent_count
+        files = head_commit.files
+        stats_text = head_commit.stats_text
+        patch_excerpt = head_commit.patch_excerpt
+
+    return CommitRecord(
+        sha="STAGED",
+        subject=subject,
+        body=body,
+        author_name="",
+        author_email="",
+        parent_count=parent_count,
+        files=files,
+        stats_text=stats_text,
+        patch_excerpt=patch_excerpt,
+    )
 
 
 def interactive_write_selection(
@@ -811,15 +906,10 @@ def render_analysis_report(report: AnalysisReport) -> str:
     ]
     if bad:
         for item in bad[:8]:
-            lines.extend(
-                [
-                    f'- {item.sha[:7]} "{item.subject}"',
-                    f"  Score: {item.score}/10",
-                    f"  Issue: {item.summary}",
-                    f"  Better: {item.better_message}",
-                    "",
-                ]
-            )
+            lines.extend([f'- {item.sha[:7]} "{item.subject}"', f"  Score: {item.score}/10"])
+            lines.extend(_format_prefixed_block("  Issue: ", item.summary, "         "))
+            lines.extend(_format_prefixed_block("  Better: ", item.better_message, "          "))
+            lines.append("")
     else:
         lines.append("No commits landed in the lowest bucket.")
         lines.append("")
@@ -851,6 +941,11 @@ def render_analysis_report(report: AnalysisReport) -> str:
                 ]
             )
 
+    if report.reword_plan:
+        lines.append("REWORD PLAN")
+        lines.extend(render_reword_plan(report.reword_plan))
+        lines.append("")
+
     lines.extend(
         [
             "YOUR STATS",
@@ -859,10 +954,9 @@ def render_analysis_report(report: AnalysisReport) -> str:
             f"Very short commits: {len(one_word)}",
             f"Cache hits: {report.usage.cache_hits}",
             f"Cache misses: {report.usage.cache_misses}",
-            f"Provider fallbacks: {report.usage.fallbacks}",
-            f"Model tokens: in={report.usage.input_tokens}, out={report.usage.output_tokens}",
         ]
     )
+    lines.extend(_render_usage_lines(report.usage))
     return "\n".join(lines)
 
 
@@ -870,6 +964,7 @@ def render_write_preview(
     changes: ChangeSummary,
     style: RepoStyle,
     variants: list[SuggestionVariant],
+    usage: UsageStats,
 ) -> str:
     lines = [
         (
@@ -877,6 +972,7 @@ def render_write_preview(
             f"({changes.file_count} files changed, +{changes.additions} -{changes.deletions})"
         ),
         f"Detected style: {style.description}",
+        f"Provider: {usage.provider} ({usage.model})",
         "",
         "Changed files:",
     ]
@@ -894,8 +990,133 @@ def render_write_preview(
                 "",
             ]
         )
+    lines.extend(_render_usage_lines(usage))
     return "\n".join(lines).strip()
 
 
 def report_to_json(report: AnalysisReport) -> str:
     return json.dumps(report.to_dict(), indent=2)
+
+
+def render_commit_check_report(report: CommitCheckReport) -> str:
+    lines = [
+        f"Checked pending commit message in {report.repo_id}",
+        f"Detected style: {report.style.description}",
+        f"Provider: {report.usage.provider} ({report.usage.model})",
+        f"Subject: {report.result.subject or '(empty subject)'}",
+        "",
+    ]
+    if report.result.score is not None:
+        lines.append(
+            f"Result: {'pass' if report.passed else 'fail'} "
+            f"({report.result.score}/10, threshold {report.min_score})"
+        )
+    else:
+        lines.append(f"Result: {'pass' if report.passed else 'fail'}")
+    lines.extend(_format_prefixed_block("Summary: ", report.result.summary, "         "))
+    if report.result.issues:
+        lines.extend(_format_prefixed_block("Main issue: ", report.result.issues[0], "            "))
+    lines.extend(_format_prefixed_block("Suggested message: ", report.result.better_message, "                   "))
+    lines.append("")
+    lines.extend(_render_usage_lines(report.usage))
+    return "\n".join(lines)
+
+
+def commit_check_to_json(report: CommitCheckReport) -> str:
+    return json.dumps(report.to_dict(), indent=2)
+
+
+def build_reword_plan(
+    results: list[AnalysisResult],
+    commit_parent_counts: dict[str, int],
+) -> dict[str, Any] | None:
+    targets = [
+        item
+        for item in results
+        if item.score is not None and (item.score or 0) <= 4 and item.special_case is None
+    ]
+    if not targets:
+        return None
+
+    ordered = list(reversed(targets))
+    oldest = ordered[0]
+    use_root = commit_parent_counts.get(oldest.sha, 1) == 0
+    return {
+        "base_sha": oldest.sha,
+        "use_root": use_root,
+        "preserve_merges": any(count > 1 for count in commit_parent_counts.values()),
+        "commits": [
+            {
+                "sha": item.sha,
+                "subject": item.subject,
+                "better_message": item.better_message,
+            }
+            for item in ordered
+        ],
+    }
+
+
+def render_reword_plan(plan: dict[str, Any]) -> list[str]:
+    commits = plan.get("commits") or []
+    if not commits:
+        return ["No weak commits were selected for rewording."]
+
+    base_parts = ["git", "rebase", "-i"]
+    if plan.get("preserve_merges"):
+        base_parts.append("--rebase-merges")
+    if plan.get("use_root"):
+        base_parts.append("--root")
+    else:
+        base_parts.append(f"{plan['base_sha'][:7]}^")
+
+    lines = [f"Start with: {' '.join(base_parts)}"]
+    if plan.get("preserve_merges"):
+        lines.append("Merge commits were detected in the analyzed range, so preserve topology.")
+    lines.append("Mark these commits as `reword` in the interactive list:")
+    for item in commits:
+        lines.append(f"- reword {item['sha'][:7]} {item['subject']}")
+    lines.append("Suggested replacements:")
+    for item in commits:
+        lines.extend(
+            _format_prefixed_block(
+                f"- {item['sha'][:7]} -> ",
+                item["better_message"],
+                "  ",
+            )
+        )
+    return lines
+
+
+def _format_prefixed_block(prefix: str, text: str, continuation_indent: str) -> list[str]:
+    lines = text.splitlines() or [""]
+    formatted = [f"{prefix}{lines[0]}"]
+    for line in lines[1:]:
+        formatted.append("" if not line else f"{continuation_indent}{line}")
+    return formatted
+
+
+def _render_usage_lines(usage: UsageStats) -> list[str]:
+    return [
+        f"Provider fallbacks: {usage.fallbacks}",
+        (
+            "Fallback reasons: " + "; ".join(usage.fallback_reasons[:3])
+            if usage.fallback_reasons
+            else "Fallback reasons: none"
+        ),
+        f"Model tokens: in={usage.input_tokens}, out={usage.output_tokens}",
+    ]
+
+
+def _sanitize_commit_message(message_text: str, comment_char: str) -> str:
+    kept_lines: list[str] = []
+    for raw_line in message_text.splitlines():
+        line = raw_line.rstrip()
+        if comment_char and line.lstrip().startswith(comment_char):
+            continue
+        kept_lines.append(line)
+
+    while kept_lines and not kept_lines[0].strip():
+        kept_lines.pop(0)
+    while kept_lines and not kept_lines[-1].strip():
+        kept_lines.pop()
+    return "\n".join(kept_lines)

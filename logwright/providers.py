@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -46,21 +47,60 @@ class BaseProvider:
         schema_name: str,
         schema: dict[str, Any],
         max_output_tokens: int = 900,
-    ) -> ProviderResponse:
+        ) -> ProviderResponse:
         raise NotImplementedError
 
 
 def _json_request(url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
     body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    retryable_statuses = {408, 429, 500, 502, 503, 504}
+    last_error: Exception | None = None
+    for attempt in range(3):
+        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            message = exc.read().decode("utf-8", "ignore")
+            compact = _compact_error_message(message)
+            last_error = ProviderError(f"HTTP {exc.code}: {compact}")
+            if exc.code not in retryable_statuses or attempt == 2:
+                raise last_error from exc
+        except urllib.error.URLError as exc:
+            last_error = ProviderError(str(exc))
+            if attempt == 2:
+                raise last_error from exc
+        time.sleep(0.6 * (attempt + 1))
+    if last_error:
+        raise last_error
+    raise ProviderError("provider request failed")
+
+
+def _compact_error_message(message: str) -> str:
+    stripped = message.strip()
+    if not stripped:
+        return "empty error response"
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as exc:
-        message = exc.read().decode("utf-8", "ignore")
-        raise ProviderError(f"HTTP {exc.code}: {message}") from exc
-    except urllib.error.URLError as exc:
-        raise ProviderError(str(exc)) from exc
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        single_line = " ".join(stripped.split())
+        return single_line[:240]
+
+    for path in (
+        ("error", "message"),
+        ("message",),
+        ("error", "status"),
+    ):
+        current: Any = payload
+        for key in path:
+            if not isinstance(current, dict) or key not in current:
+                current = None
+                break
+            current = current[key]
+        if isinstance(current, str) and current.strip():
+            return current.strip()
+    compact = " ".join(stripped.split())
+    return compact[:240]
 
 
 def _extract_json_text(text: str) -> dict[str, Any]:
@@ -231,6 +271,8 @@ class GeminiProvider(BaseProvider):
                 "responseMimeType": "application/json",
                 "responseJsonSchema": schema,
                 "maxOutputTokens": max_output_tokens,
+                "temperature": 0,
+                "thinkingConfig": {"thinkingBudget": 0},
             },
         }
         model_name = urllib.parse.quote(self.model, safe="")

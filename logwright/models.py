@@ -66,10 +66,18 @@ class UsageStats:
     cache_hits: int = 0
     cache_misses: int = 0
     fallbacks: int = 0
+    fallback_reasons: list[str] = field(default_factory=list)
 
     def add_tokens(self, input_tokens: int | None, output_tokens: int | None) -> None:
         self.input_tokens += int(input_tokens or 0)
         self.output_tokens += int(output_tokens or 0)
+
+    def add_fallback_reason(self, reason: str) -> None:
+        cleaned = reason.strip()
+        if not cleaned:
+            return
+        if cleaned not in self.fallback_reasons:
+            self.fallback_reasons.append(cleaned)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -129,6 +137,7 @@ class AnalysisReport:
     results: list[AnalysisResult]
     usage: UsageStats
     scanned_commits: int
+    reword_plan: dict[str, Any] | None = None
 
     def scored_results(self) -> list[AnalysisResult]:
         return [result for result in self.results if result.score is not None]
@@ -148,4 +157,27 @@ class AnalysisReport:
             "usage": self.usage.to_dict(),
             "scanned_commits": self.scanned_commits,
             "average_score": round(self.average_score(), 2),
+            "reword_plan": self.reword_plan,
+        }
+
+
+@dataclass
+class CommitCheckReport:
+    repo_id: str
+    repo_path: str
+    style: RepoStyle
+    result: AnalysisResult
+    usage: UsageStats
+    min_score: int
+    passed: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "repo_id": self.repo_id,
+            "repo_path": self.repo_path,
+            "style": self.style.to_dict(),
+            "result": self.result.to_dict(),
+            "usage": self.usage.to_dict(),
+            "min_score": self.min_score,
+            "passed": self.passed,
         }

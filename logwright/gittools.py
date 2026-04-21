@@ -30,6 +30,28 @@ CONVENTIONAL_RE = re.compile(
     r"(?P<scope>\([^)]+\))?(?P<bang>!)?:\s+\S"
 )
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,}")
+IGNORED_KEYWORDS = {
+    "and",
+    "are",
+    "but",
+    "for",
+    "from",
+    "into",
+    "none",
+    "not",
+    "only",
+    "return",
+    "that",
+    "the",
+    "their",
+    "then",
+    "this",
+    "true",
+    "use",
+    "using",
+    "false",
+    "with",
+}
 
 
 class GitError(RuntimeError):
@@ -59,6 +81,13 @@ def run_git(repo: Path, *args: str, check: bool = True) -> str:
 def ensure_git_repo(path: Path) -> Path:
     top_level = run_git(path, "rev-parse", "--show-toplevel").strip()
     return Path(top_level)
+
+
+def _resolve_git_path(repo: Path, raw_path: str) -> Path:
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    return repo / path
 
 
 def infer_repo_id(repo: Path) -> str:
@@ -131,7 +160,7 @@ def get_commit_record(repo: Path, sha: str) -> CommitRecord:
     if len(raw_meta) < 6:
         raise GitError(f"unexpected git show metadata for {sha}")
     _, subject, body, author_name, author_email, parents = raw_meta[:6]
-    files_output = run_git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", sha)
+    files_output = run_git(repo, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", sha)
     stats_text = run_git(repo, "show", "--stat", "--format=", "--summary", sha).strip()
     patch = run_git(repo, "show", "--format=", "--unified=2", "--no-ext-diff", sha)
     files = [line for line in files_output.splitlines() if line]
@@ -150,8 +179,17 @@ def get_commit_record(repo: Path, sha: str) -> CommitRecord:
 
 
 def detect_repo_style(repo: Path, sample_size: int = 25) -> RepoStyle:
-    raw = run_git(repo, "log", f"--max-count={sample_size}", "--format=%s%x1f%b%x1e")
+    raw = run_git(repo, "log", f"--max-count={sample_size}", "--format=%s%x1f%b%x1e", check=False)
     entries = [entry for entry in raw.split("\x1e") if entry.strip()]
+    if not entries:
+        return RepoStyle(
+            description="No repo history yet",
+            conventional_commits=False,
+            scoped_commits=False,
+            body_rate=0.0,
+            sample_size=0,
+            dominant_types=[],
+        )
     conventional = 0
     scoped = 0
     body_count = 0
@@ -201,6 +239,28 @@ def detect_repo_style(repo: Path, sample_size: int = 25) -> RepoStyle:
     )
 
 
+def git_comment_char(repo: Path) -> str:
+    raw = run_git(repo, "config", "--get", "core.commentChar", check=False).strip()
+    if not raw or raw == "auto":
+        return "#"
+    return raw[0]
+
+
+def pending_commit_parent_count(repo: Path) -> int:
+    head_exists = bool(run_git(repo, "rev-parse", "-q", "--verify", "HEAD", check=False).strip())
+    merge_head_raw = run_git(repo, "rev-parse", "--git-path", "MERGE_HEAD", check=False).strip()
+    merge_parent_count = 0
+    if merge_head_raw:
+        merge_head_path = _resolve_git_path(repo, merge_head_raw)
+        if merge_head_path.exists():
+            merge_parent_count = len(
+                [line for line in merge_head_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            )
+    if merge_parent_count:
+        return 1 + merge_parent_count
+    return 1 if head_exists else 0
+
+
 def _keywords_from_files(files: list[str]) -> list[str]:
     tokens: Counter[str] = Counter()
     ignored = {
@@ -220,7 +280,12 @@ def _keywords_from_files(files: list[str]) -> list[str]:
     for file_path in files:
         for part in re.split(r"[/_.-]+", file_path):
             lowered = part.lower()
-            if len(lowered) < 3 or lowered.isdigit() or lowered in ignored:
+            if (
+                len(lowered) < 3
+                or lowered.isdigit()
+                or lowered in ignored
+                or lowered in IGNORED_KEYWORDS
+            ):
                 continue
             tokens[lowered] += 1
     return [token for token, _ in tokens.most_common(8)]
@@ -228,14 +293,15 @@ def _keywords_from_files(files: list[str]) -> list[str]:
 
 def keywords_from_diff(files: list[str], patch_excerpt: str) -> list[str]:
     tokens = Counter(_keywords_from_files(files))
-    for match in re.finditer(
-        r"^[+\-]\s*(?:def|class|function|const|let|var)?\s*([A-Za-z_][A-Za-z0-9_]*)",
-        patch_excerpt,
-        re.MULTILINE,
-    ):
-        token = match.group(1).lower()
-        if len(token) >= 3:
-            tokens[token] += 2
+    patterns = (
+        r"^[+\-]\s*(?:def|class|function|const|let|var|interface|type|enum)\s+([A-Za-z_][A-Za-z0-9_]*)",
+        r"^[+\-]\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::|=|\()",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, patch_excerpt, re.MULTILINE):
+            token = match.group(1).lower()
+            if len(token) >= 3 and token not in IGNORED_KEYWORDS:
+                tokens[token] += 2
     return [token for token, _ in tokens.most_common(10)]
 
 
@@ -272,4 +338,8 @@ def staged_change_summary(repo: Path) -> ChangeSummary:
 
 
 def text_keywords(text: str) -> list[str]:
-    return [match.group(0).lower() for match in WORD_RE.finditer(text)]
+    return [
+        token
+        for token in (match.group(0).lower() for match in WORD_RE.finditer(text))
+        if token not in IGNORED_KEYWORDS
+    ]

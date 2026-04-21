@@ -6,8 +6,11 @@ from pathlib import Path
 from logwright import __version__
 from logwright.app import (
     analyze_local_or_remote,
+    check_pending_commit_message,
+    commit_check_to_json,
     interactive_write_selection,
     prepare_write_mode,
+    render_commit_check_report,
     render_analysis_report,
     render_write_preview,
     report_to_json,
@@ -31,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--analyze", action="store_true", help="Analyze recent commits")
     mode.add_argument("--write", action="store_true", help="Suggest a commit for staged changes")
+    mode.add_argument(
+        "--commit-msg-file",
+        dest="commit_message_file",
+        help="Check a pending commit message against staged changes, suitable for commit-msg hooks",
+    )
 
     parser.add_argument(
         "--provider",
@@ -58,7 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--repo",
         default=".",
-        help="Repository path for local analysis or write mode",
+        help="Repository path for local analysis, write mode, or commit-msg checks",
+    )
+    parser.add_argument(
+        "--min-score",
+        type=int,
+        default=5,
+        help="Minimum passing score for --commit-msg-file mode",
     )
     return parser
 
@@ -85,12 +99,26 @@ def main(argv: list[str] | None = None) -> int:
                 print(render_analysis_report(report))
             return 0
 
-        changes, style, variants, repo = prepare_write_mode(
+        if args.commit_message_file:
+            report = check_pending_commit_message(
+                repo_path=repo_path,
+                message_file=Path(args.commit_message_file),
+                provider_name=args.provider,
+                model=args.model,
+                min_score=args.min_score,
+            )
+            if args.json:
+                print(commit_check_to_json(report))
+            else:
+                print(render_commit_check_report(report))
+            return 0 if report.passed else 1
+
+        changes, style, variants, usage, repo = prepare_write_mode(
             repo_path=repo_path,
             provider_name=args.provider,
             model=args.model,
         )
-        print(render_write_preview(changes, style, variants))
+        print(render_write_preview(changes, style, variants, usage))
         final_message = None
         if not args.print_only:
             final_message = interactive_write_selection(
