@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from logwright import __version__
 from logwright.app import (
     analyze_local_or_remote,
     interactive_write_selection,
@@ -20,6 +21,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="logwright",
         description="Critique git commit messages against their diffs and help write better ones.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+        help="Print the installed logwright version and exit",
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--analyze", action="store_true", help="Analyze recent commits")

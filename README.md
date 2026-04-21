@@ -58,6 +58,19 @@ Use heuristic mode only:
 logwright --analyze --provider heuristic
 ```
 
+Print the installed version:
+
+```bash
+logwright --version
+```
+
+## Versioning
+
+`logwright` follows Semantic Versioning. While the project is still in the `0.x` stage,
+scoring heuristics, provider-specific output details, and machine-readable payload shape may
+still evolve between minor releases. The core CLI surface is intended to remain compact and
+predictable: `--analyze`, `--write`, `--provider`, `--json`, and `--version`.
+
 ## Providers
 
 `logwright` supports:

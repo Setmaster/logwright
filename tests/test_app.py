@@ -1,10 +1,14 @@
+import io
 import os
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from logwright import __version__
 from logwright.app import detect_low_signal_subject, heuristic_analysis, heuristic_commit_message
+from logwright.cli import build_parser
 from logwright.env import load_env_file
 from logwright.models import CommitRecord, RepoStyle
 from logwright.providers import (
@@ -104,6 +108,17 @@ class LogwrightEnvTests(unittest.TestCase):
             provider = resolve_provider("auto")
             self.assertIsInstance(provider, GeminiProvider)
             self.assertEqual("gemini-2.5-flash", provider.model)
+
+
+class LogwrightCliTests(unittest.TestCase):
+    def test_version_flag_reports_package_version(self) -> None:
+        parser = build_parser()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            with self.assertRaises(SystemExit) as context:
+                parser.parse_args(["--version"])
+        self.assertEqual(0, context.exception.code)
+        self.assertEqual(f"logwright {__version__}\n", output.getvalue())
 
 
 if __name__ == "__main__":
