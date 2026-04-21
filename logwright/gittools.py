@@ -65,13 +65,16 @@ def require_git() -> None:
 
 def run_git(repo: Path, *args: str, check: bool = True) -> str:
     require_git()
-    process = subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        process = subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise GitError(f"repository path does not exist: {repo}") from exc
     if check and process.returncode != 0:
         stderr = process.stderr.strip() or process.stdout.strip()
         raise GitError(f"git {' '.join(args)} failed: {stderr}")
@@ -88,6 +91,16 @@ def _resolve_git_path(repo: Path, raw_path: str) -> Path:
     if path.is_absolute():
         return path
     return repo / path
+
+
+def git_path(repo: Path, relative_path: str) -> Path:
+    raw = run_git(repo, "rev-parse", "--git-path", relative_path).strip()
+    return _resolve_git_path(repo, raw)
+
+
+def git_dir(repo: Path) -> Path:
+    raw = run_git(repo, "rev-parse", "--absolute-git-dir").strip()
+    return Path(raw)
 
 
 def infer_repo_id(repo: Path) -> str:

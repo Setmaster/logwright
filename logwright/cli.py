@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from logwright import __version__
@@ -8,10 +9,13 @@ from logwright.app import (
     analyze_local_or_remote,
     check_pending_commit_message,
     commit_check_to_json,
+    hook_install_to_json,
+    install_commit_msg_hook,
     interactive_write_selection,
     prepare_write_mode,
     render_commit_check_report,
     render_analysis_report,
+    render_hook_install_result,
     render_write_preview,
     report_to_json,
 )
@@ -39,12 +43,20 @@ def build_parser() -> argparse.ArgumentParser:
         dest="commit_message_file",
         help="Check a pending commit message against staged changes, suitable for commit-msg hooks",
     )
+    mode.add_argument(
+        "--install-commit-msg-hook",
+        action="store_true",
+        help="Install a repo-local commit-msg hook that runs logwright",
+    )
 
     parser.add_argument(
         "--provider",
         default="auto",
         choices=["auto", "anthropic", "openai", "gemini", "heuristic"],
-        help="LLM provider to use. auto falls back to heuristics if no API key is set.",
+        help=(
+            "LLM provider to use. auto falls back to heuristics if no API key is set. "
+            "Hook install defaults to heuristic unless --provider is passed explicitly."
+        ),
     )
     parser.add_argument("--model", help="Override the provider model name")
     parser.add_argument("--limit", type=int, default=50, help="Number of commits to inspect")
@@ -72,14 +84,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-score",
         type=int,
         default=5,
-        help="Minimum passing score for --commit-msg-file mode",
+        help="Minimum passing score for --commit-msg-file and hook-install modes",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing non-logwright commit-msg hook after creating a backup",
     )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_args = list(argv) if argv is not None else sys.argv[1:]
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_args)
     repo_path = Path(args.repo).resolve()
     load_env_file(repo_path / ".env")
 
@@ -113,6 +131,28 @@ def main(argv: list[str] | None = None) -> int:
                 print(render_commit_check_report(report))
             return 0 if report.passed else 1
 
+        if args.install_commit_msg_hook:
+            provider_explicit = _flag_was_provided(raw_args, "--provider")
+            model_explicit = _flag_was_provided(raw_args, "--model")
+            install_provider, install_model = _resolve_hook_install_provider(
+                provider_name=args.provider,
+                model=args.model,
+                provider_explicit=provider_explicit,
+                model_explicit=model_explicit,
+            )
+            result = install_commit_msg_hook(
+                repo_path=repo_path,
+                provider_name=install_provider,
+                model=install_model,
+                min_score=args.min_score,
+                force=args.force,
+            )
+            if args.json:
+                print(hook_install_to_json(result))
+            else:
+                print(render_hook_install_result(result))
+            return 0
+
         changes, style, variants, usage, repo = prepare_write_mode(
             repo_path=repo_path,
             provider_name=args.provider,
@@ -132,6 +172,28 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except (GitError, ProviderError, ValueError) as exc:
         parser.exit(2, f"logwright: {exc}\n")
+
+
+def _flag_was_provided(argv: list[str] | None, flag: str) -> bool:
+    if argv is None:
+        return False
+    return any(arg == flag or arg.startswith(f"{flag}=") for arg in argv)
+
+
+def _resolve_hook_install_provider(
+    *,
+    provider_name: str,
+    model: str | None,
+    provider_explicit: bool,
+    model_explicit: bool,
+) -> tuple[str, str | None]:
+    if model_explicit and provider_name in {"auto", "heuristic"}:
+        raise ValueError(
+            "--model requires --provider anthropic, openai, or gemini for hook installation"
+        )
+    if not provider_explicit and provider_name == "auto":
+        return "heuristic", None
+    return provider_name, model
 
 
 if __name__ == "__main__":

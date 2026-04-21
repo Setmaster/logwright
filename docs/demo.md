@@ -3,6 +3,19 @@
 These are real terminal transcripts captured from the current implementation. Output varies by
 provider, model, and repo contents, but the flows below reflect the shipped behavior.
 
+## Hook install
+
+```text
+$ python3 -m logwright --install-commit-msg-hook --repo /tmp/logwright-demo-repo
+Installed commit-msg hook in /tmp/logwright-demo-repo
+Hook path: /tmp/logwright-demo-repo/.git/hooks/commit-msg
+Provider: heuristic
+Minimum score: 5/10
+Configured local core.hooksPath: /tmp/logwright-demo-repo/.git/hooks
+Runs: logwright --commit-msg-file "$1" --provider heuristic --min-score 5 --repo /tmp/logwright-demo-repo
+Created new hook.
+```
+
 ## Analyze mode
 
 ```text
@@ -12,69 +25,69 @@ Detected style: Conventional Commits
 Provider: openai (gpt-5.4-mini)
 
 COMMITS THAT NEED WORK
-- c699c0b "feat: add diff-aware commit critic CLI"
+- c703f15 "feat: add commit-msg validation and reword plans"
   Score: 4/10
-  Issue: The subject follows Conventional Commits and is readable, but it only partially describes a very large implementation change. The diff adds a full CLI application, git/diff tooling, caching, provider/model abstractions, tests, and documentation, not just a commit critic CLI. With no body, the message leaves the main scope and functionality under-described.
-  Better: feat: add diff-aware commit analysis CLI
+  Issue: The subject is conventional and readable, but it under-describes a very large change and only partially matches the diff. The patch adds commit-msg validation plus several related improvements, so the message should mention the hook/validation work and likely split or broaden the second clause.
+  Better: feat: add commit-msg validation and reword suggestions
 
-          Add a CLI for scoring commit messages against staged or committed diffs, generating message suggestions, detecting repository commit style, and caching provider results. Include git helpers, provider/model abstractions, tests, and packaging updates.
+          Add a --commit-msg-file mode for checking pending commit messages against staged changes, including hook-friendly report rendering and JSON output. Rework weak-commit guidance to produce actionable reword plans, and update docs and demos to cover the new flows.
 
 WELL-WRITTEN COMMITS
-- 31ffd42 "feat: add version flag and roadmap"
-  Score: 8/10
-  Why: The subject fits the repo's Conventional Commits style and accurately captures the main user-visible change: adding a --version flag. It is slightly incomplete because the diff also adds a new ROADMAP.md and updates README/tests, which the message doesn't mention, but that omission is acceptable for a concise feat commit.
+No commits landed in the strongest bucket yet.
 
 REWORD PLAN
-Start with: git rebase -i c699c0b^
+Start with: git rebase -i c703f15^
 Mark these commits as `reword` in the interactive list:
-- reword c699c0b feat: add diff-aware commit critic CLI
+- reword c703f15 feat: add commit-msg validation and reword plans
 Suggested replacements:
-- c699c0b -> feat: add diff-aware commit analysis CLI
+- c703f15 -> feat: add commit-msg validation and reword suggestions
 
-  Add a CLI for scoring commit messages against staged or committed diffs, generating message suggestions, detecting repository commit style, and caching provider results. Include git helpers, provider/model abstractions, tests, and packaging updates.
+  Add a --commit-msg-file mode for checking pending commit messages against staged changes, including hook-friendly report rendering and JSON output. Rework weak-commit guidance to produce actionable reword plans, and update docs and demos to cover the new flows.
 
 YOUR STATS
-Average score: 5.4/10
-Vague commits: 1
+Average score: 5.2/10
+Vague commits: 0
 Very short commits: 0
 Cache hits: 0
 Cache misses: 5
 Provider fallbacks: 0
 Fallback reasons: none
-Model tokens: in=6690, out=1306
+Model tokens: in=7643, out=1304
+Estimated API cost: $0.0116 (standard text-token pricing for gpt-5.4-mini)
 ```
 
 ## Write mode
 
 ```text
-$ python3 -m logwright --write --print-only --provider anthropic --repo /tmp/demo-repo
-Analyzing staged changes... (1 files changed, +2 -0)
-Detected style: No repo history yet
-Provider: anthropic (claude-sonnet-4-6)
+$ python3 -m logwright --write --print-only --provider openai --repo /tmp/logwright-write-demo
+Analyzing staged changes... (1 files changed, +3 -0)
+Detected style: Conventional Commits
+Provider: openai (gpt-5.4-mini)
 
 Changed files:
-- app.py
+- docs/setup.md
 
 Suggested commit messages:
 1. terse
-Add app.py
-Why: Minimal message noting the new file was added.
+docs: add setup guide
+Why: Shortest conventional commit that accurately describes the new documentation file.
 
 2. standard
-Initialize app.py with alpha and beta entries
-Why: Concise description of what was added and its initial content.
+docs: add setup instructions
+Why: Clear conventional commit message matching the added setup documentation content.
 
 3. detailed
-Add initial app.py with placeholder content
+docs: add setup guide
 
-Create app.py as the application entry point containing two initial
-lines: 'alpha' and 'beta'. This establishes the base file for further
-development.
-Why: Explains the purpose of the file and describes its initial content in context.
+Document the initial setup steps in docs/setup.md.
+
+Include a brief note to run the installer.
+Why: Provides a fuller summary and body while staying faithful to the small docs-only change.
 
 Provider fallbacks: 0
 Fallback reasons: none
-Model tokens: in=361, out=197
+Model tokens: in=264, out=121
+Estimated API cost: $0.0007 (standard text-token pricing for gpt-5.4-mini)
 ```
 
 ## Commit-msg validation
@@ -96,4 +109,5 @@ Suggested message: Update readme
 Provider fallbacks: 0
 Fallback reasons: none
 Model tokens: in=0, out=0
+Estimated API cost: $0.0000 (heuristic mode)
 ```

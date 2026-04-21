@@ -80,7 +80,18 @@ class UsageStats:
             self.fallback_reasons.append(cleaned)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        from logwright.pricing import estimate_usage_cost
+
+        payload.update(
+            estimate_usage_cost(
+                provider=self.provider,
+                model=self.model,
+                input_tokens=self.input_tokens,
+                output_tokens=self.output_tokens,
+            )
+        )
+        return payload
 
 
 @dataclass
@@ -181,3 +192,19 @@ class CommitCheckReport:
             "min_score": self.min_score,
             "passed": self.passed,
         }
+
+
+@dataclass
+class HookInstallResult:
+    repo_path: str
+    hook_path: str
+    provider: str
+    model: str | None
+    min_score: int
+    command: str
+    configured_hooks_path: str | None = None
+    backup_path: str | None = None
+    updated_existing: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

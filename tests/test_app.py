@@ -1,7 +1,9 @@
 import io
+import json
 import os
+import sys
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -13,24 +15,29 @@ from logwright.app import (
     detect_low_signal_subject,
     heuristic_analysis,
     heuristic_commit_message,
+    install_commit_msg_hook,
     pending_commit_record,
     render_analysis_report,
     render_commit_check_report,
+    render_hook_install_result,
     render_reword_plan,
     render_write_preview,
 )
-from logwright.cli import build_parser
+from logwright.cli import build_parser, main
 from logwright.env import load_env_file
+from logwright.gittools import git_dir, git_path, run_git
 from logwright.models import (
     AnalysisReport,
     AnalysisResult,
     ChangeSummary,
     CommitCheckReport,
     CommitRecord,
+    HookInstallResult,
     RepoStyle,
     SuggestionVariant,
     UsageStats,
 )
+from logwright.pricing import estimate_usage_cost
 from logwright.providers import (
     GeminiProvider,
     default_anthropic_model,
@@ -48,6 +55,33 @@ def build_style() -> RepoStyle:
         sample_size=20,
         dominant_types=["fix", "feat"],
     )
+
+
+def init_test_repo(repo: Path, *, configure_user: bool = False) -> None:
+    subprocess = __import__("subprocess")
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "config", "core.hooksPath", ".git/hooks"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if configure_user:
+        subprocess.run(
+            ["git", "config", "user.name", "Tester"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "tester@example.com"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
 
 class LogwrightHeuristicTests(unittest.TestCase):
@@ -267,13 +301,46 @@ class LogwrightReportTests(unittest.TestCase):
         self.assertIn("Fallback reasons: provider did not return valid JSON", rendered)
         self.assertIn("REWORD PLAN", rendered)
 
+    def test_usage_stats_to_dict_includes_estimated_cost(self) -> None:
+        usage = UsageStats(provider="openai", model="gpt-5.4-mini")
+        usage.add_tokens(1_000, 2_000)
+        payload = usage.to_dict()
+        self.assertEqual(0.00975, payload["estimated_cost_usd"])
+        self.assertIn("standard text-token pricing", payload["cost_note"])
+
+    def test_estimate_usage_cost_handles_heuristic_mode(self) -> None:
+        payload = estimate_usage_cost(
+            provider="heuristic",
+            model="heuristic",
+            input_tokens=0,
+            output_tokens=0,
+        )
+        self.assertEqual(0.0, payload["estimated_cost_usd"])
+        self.assertEqual("heuristic mode", payload["cost_note"])
+
+    def test_estimate_usage_cost_handles_snapshot_aliases(self) -> None:
+        anthropic = estimate_usage_cost(
+            provider="anthropic",
+            model="claude-sonnet-4-6-20250420",
+            input_tokens=1_000,
+            output_tokens=2_000,
+        )
+        gemini = estimate_usage_cost(
+            provider="gemini",
+            model="gemini-2.5-flash-preview-04-17",
+            input_tokens=1_000,
+            output_tokens=2_000,
+        )
+        self.assertIsNotNone(anthropic["estimated_cost_usd"])
+        self.assertIsNotNone(gemini["estimated_cost_usd"])
+
 
 class LogwrightPreCommitTests(unittest.TestCase):
     def test_pending_commit_record_parses_subject_and_body(self) -> None:
         with TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)
             subprocess = __import__("subprocess")
-            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+            init_test_repo(repo)
             (repo / "README.md").write_text("hello\n", encoding="utf-8")
             subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
             record = pending_commit_record(
@@ -293,9 +360,7 @@ class LogwrightPreCommitTests(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)
             subprocess = __import__("subprocess")
-            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
-            subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo, check=True, capture_output=True, text=True)
-            subprocess.run(["git", "config", "user.email", "tester@example.com"], cwd=repo, check=True, capture_output=True, text=True)
+            init_test_repo(repo, configure_user=True)
             (repo / "README.md").write_text("hello\n", encoding="utf-8")
             subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
             subprocess.run(["git", "commit", "-m", "docs: add readme"], cwd=repo, check=True, capture_output=True, text=True)
@@ -309,7 +374,7 @@ class LogwrightPreCommitTests(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)
             subprocess = __import__("subprocess")
-            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+            init_test_repo(repo)
             (repo / "README.md").write_text("hello\n", encoding="utf-8")
             subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
             record = pending_commit_record(
@@ -329,9 +394,7 @@ class LogwrightPreCommitTests(unittest.TestCase):
             repo = Path(temp_dir)
             message_file = repo / "COMMIT_EDITMSG"
             subprocess = __import__("subprocess")
-            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
-            subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo, check=True, capture_output=True, text=True)
-            subprocess.run(["git", "config", "user.email", "tester@example.com"], cwd=repo, check=True, capture_output=True, text=True)
+            init_test_repo(repo, configure_user=True)
             (repo / "README.md").write_text("hello\n", encoding="utf-8")
             subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
             message_file.write_text("docs: update readme\n", encoding="utf-8")
@@ -350,9 +413,7 @@ class LogwrightPreCommitTests(unittest.TestCase):
             repo = Path(temp_dir)
             message_file = repo / "COMMIT_EDITMSG"
             subprocess = __import__("subprocess")
-            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
-            subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo, check=True, capture_output=True, text=True)
-            subprocess.run(["git", "config", "user.email", "tester@example.com"], cwd=repo, check=True, capture_output=True, text=True)
+            init_test_repo(repo, configure_user=True)
             (repo / "README.md").write_text("hello\n", encoding="utf-8")
             subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
             subprocess.run(["git", "commit", "-m", "docs: add readme"], cwd=repo, check=True, capture_output=True, text=True)
@@ -400,6 +461,7 @@ class LogwrightPreCommitTests(unittest.TestCase):
     def test_render_write_preview_includes_usage_details(self) -> None:
         usage = UsageStats(provider="openai", model="gpt-5.4-mini", fallbacks=1)
         usage.add_fallback_reason("HTTP 503: upstream overloaded")
+        usage.add_tokens(1_000, 2_000)
         preview = render_write_preview(
             ChangeSummary(
                 files=["README.md"],
@@ -428,6 +490,175 @@ class LogwrightPreCommitTests(unittest.TestCase):
         self.assertIn("Provider: openai (gpt-5.4-mini)", preview)
         self.assertIn("Provider fallbacks: 1", preview)
         self.assertIn("Fallback reasons: HTTP 503: upstream overloaded", preview)
+        self.assertIn("Estimated API cost: $0.0097", preview)
+
+
+class LogwrightHookInstallTests(unittest.TestCase):
+    def test_install_commit_msg_hook_creates_heuristic_hook(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            init_test_repo(repo)
+            result = install_commit_msg_hook(
+                repo_path=repo,
+                provider_name="heuristic",
+                model=None,
+                min_score=5,
+                force=False,
+            )
+            hook_path = git_path(repo, "hooks/commit-msg")
+            content = hook_path.read_text(encoding="utf-8")
+            self.assertTrue(hook_path.exists())
+            self.assertEqual("heuristic", result.provider)
+            self.assertIn(sys.executable, content)
+            self.assertIn("export PYTHONPATH=", content)
+            self.assertIn('--commit-msg-file "$1"', content)
+            self.assertIn("--provider heuristic", content)
+            self.assertIn("--min-score 5", content)
+
+    def test_install_commit_msg_hook_rehomes_shared_hooks_path_to_repo_local(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            repo = root / "repo"
+            repo.mkdir()
+            init_test_repo(repo)
+            shared_hooks = root / "shared-hooks"
+            run_git(repo, "config", "core.hooksPath", str(shared_hooks))
+
+            result = install_commit_msg_hook(
+                repo_path=repo,
+                provider_name="heuristic",
+                model=None,
+                min_score=5,
+                force=False,
+            )
+
+            repo_hook_dir = git_dir(repo) / "hooks"
+            self.assertEqual(str(repo_hook_dir), result.configured_hooks_path)
+            self.assertEqual(str(repo_hook_dir), run_git(repo, "config", "--local", "--get", "core.hooksPath").strip())
+            self.assertEqual(repo_hook_dir / "commit-msg", Path(result.hook_path))
+
+    def test_install_commit_msg_hook_requires_force_for_foreign_hook(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            init_test_repo(repo)
+            hook_path = git_path(repo, "hooks/commit-msg")
+            hook_path.parent.mkdir(parents=True, exist_ok=True)
+            hook_path.write_text("#!/bin/sh\necho existing\n", encoding="utf-8")
+            with self.assertRaisesRegex(Exception, "refusing to overwrite existing commit-msg hook"):
+                install_commit_msg_hook(
+                    repo_path=repo,
+                    provider_name="auto",
+                    model=None,
+                    min_score=5,
+                    force=False,
+                )
+
+    def test_install_commit_msg_hook_backs_up_foreign_hook_with_force(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            init_test_repo(repo)
+            hook_path = git_path(repo, "hooks/commit-msg")
+            hook_path.parent.mkdir(parents=True, exist_ok=True)
+            hook_path.write_text("#!/bin/sh\necho existing\n", encoding="utf-8")
+            result = install_commit_msg_hook(
+                repo_path=repo,
+                provider_name="openai",
+                model="gpt-5.4-mini",
+                min_score=6,
+                force=True,
+            )
+            self.assertIsNotNone(result.backup_path)
+            assert result.backup_path is not None
+            backup_path = Path(result.backup_path)
+            self.assertTrue(backup_path.exists())
+            self.assertIn("echo existing", backup_path.read_text(encoding="utf-8"))
+            self.assertIn("--provider openai", hook_path.read_text(encoding="utf-8"))
+
+    def test_render_hook_install_result_mentions_backup_when_present(self) -> None:
+        rendered = render_hook_install_result(
+            HookInstallResult(
+                repo_path="/tmp/repo",
+                hook_path="/tmp/repo/.git/hooks/commit-msg",
+                provider="heuristic",
+                model=None,
+                min_score=5,
+                command="python -m logwright --commit-msg-file \"$1\"",
+                configured_hooks_path="/tmp/repo/.git/hooks",
+                backup_path="/tmp/repo/.git/hooks/commit-msg.before-logwright",
+                updated_existing=True,
+            )
+        )
+        self.assertIn("Installed commit-msg hook", rendered)
+        self.assertIn("Configured local core.hooksPath: /tmp/repo/.git/hooks", rendered)
+        self.assertIn("Backup: /tmp/repo/.git/hooks/commit-msg.before-logwright", rendered)
+
+    def test_cli_install_hook_defaults_to_heuristic_provider(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            init_test_repo(repo)
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = main(
+                    ["--install-commit-msg-hook", "--repo", str(repo), "--json"]
+                )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(0, exit_code)
+            self.assertEqual("heuristic", payload["provider"])
+            self.assertIsNone(payload["model"])
+
+    def test_cli_install_hook_preserves_explicit_auto_provider(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            init_test_repo(repo)
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = main(
+                    [
+                        "--install-commit-msg-hook",
+                        "--repo",
+                        str(repo),
+                        "--provider",
+                        "auto",
+                        "--json",
+                    ]
+                )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(0, exit_code)
+            self.assertEqual("auto", payload["provider"])
+            self.assertIsNone(payload["model"])
+            self.assertIn("--provider auto", Path(payload["hook_path"]).read_text(encoding="utf-8"))
+
+    def test_cli_install_hook_rejects_model_without_explicit_provider(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            init_test_repo(repo)
+            stderr = io.StringIO()
+            with redirect_stderr(stderr), self.assertRaises(SystemExit) as exc:
+                main(
+                    [
+                        "--install-commit-msg-hook",
+                        "--repo",
+                        str(repo),
+                        "--model",
+                        "gpt-5.4-mini",
+                    ]
+                )
+            self.assertEqual(2, exc.exception.code)
+            self.assertIn("--model requires --provider anthropic, openai, or gemini", stderr.getvalue())
+
+    def test_cli_install_hook_missing_repo_reports_clean_error(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(SystemExit) as exc:
+            main(
+                [
+                    "--install-commit-msg-hook",
+                    "--repo",
+                    "/tmp/nonexistent-logwright-test-repo",
+                    "--json",
+                ]
+            )
+        self.assertEqual(2, exc.exception.code)
+        self.assertIn("repository path does not exist", stderr.getvalue())
 
 
 if __name__ == "__main__":
