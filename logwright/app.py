@@ -64,6 +64,7 @@ GENERIC_SUBJECT_WORDS = {
     "stuff",
     "cleanup",
 }
+SCISSORS_RE = re.compile(r"^-+\s*>8\s*-+\s*$")
 
 
 def detect_low_signal_subject(subject: str) -> bool:
@@ -1111,6 +1112,8 @@ def _sanitize_commit_message(message_text: str, comment_char: str) -> str:
     kept_lines: list[str] = []
     for raw_line in message_text.splitlines():
         line = raw_line.rstrip()
+        if _is_scissors_line(line, comment_char):
+            break
         if comment_char and line.lstrip().startswith(comment_char):
             continue
         kept_lines.append(line)
@@ -1120,3 +1123,12 @@ def _sanitize_commit_message(message_text: str, comment_char: str) -> str:
     while kept_lines and not kept_lines[-1].strip():
         kept_lines.pop()
     return "\n".join(kept_lines)
+
+
+def _is_scissors_line(line: str, comment_char: str) -> bool:
+    candidate = line.strip()
+    if not candidate:
+        return False
+    if comment_char and candidate.startswith(comment_char):
+        candidate = candidate[len(comment_char) :].strip()
+    return bool(SCISSORS_RE.match(candidate))

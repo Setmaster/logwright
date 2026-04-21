@@ -305,6 +305,25 @@ class LogwrightPreCommitTests(unittest.TestCase):
             record = pending_commit_record(repo, "merge docs\n")
             self.assertEqual(2, record.parent_count)
 
+    def test_pending_commit_record_stops_at_scissors_marker(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            subprocess = __import__("subprocess")
+            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+            (repo / "README.md").write_text("hello\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
+            record = pending_commit_record(
+                repo,
+                (
+                    "wip\n\n"
+                    "# ------------------------ >8 ------------------------\n"
+                    "diff --git a/README.md b/README.md\n"
+                    "+hello\n"
+                ),
+            )
+            self.assertEqual("wip", record.subject)
+            self.assertEqual("", record.body)
+
     def test_check_pending_commit_message_uses_heuristics_without_provider(self) -> None:
         with TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)
