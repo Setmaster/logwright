@@ -133,7 +133,7 @@ transcript below is intentionally smaller and only shows a representative subset
 | Gemini | Locally smoke-tested | Locally smoke-tested | Uses structured JSON output with `thinkingBudget: 0` and transient retries |
 | Heuristic | Locally smoke-tested | Locally smoke-tested | No API key required |
 
-If a provider call fails at runtime, `logwright` falls back to heuristics and prints the fallback reason in the terminal output.
+If a provider call fails at runtime, `logwright` falls back to heuristics and prints the fallback reason in the terminal output. When no fallback occurs, those lines are omitted to keep the report compact.
 
 Estimated API cost uses the current standard text-token rates for the default shipping models as
 of 2026-04-20:
@@ -187,8 +187,6 @@ Vague commits: 0
 Very short commits: 0
 Cache hits: 0
 Cache misses: 2
-Provider fallbacks: 0
-Fallback reasons: none
 Model tokens: in=0, out=0
 Estimated API cost: $0.0000 (heuristic mode)
 ```

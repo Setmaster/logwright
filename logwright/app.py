@@ -1213,15 +1213,12 @@ def _render_usage_lines(usage: UsageStats) -> list[str]:
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
     )
-    lines = [
-        f"Provider fallbacks: {usage.fallbacks}",
-        (
-            "Fallback reasons: " + "; ".join(usage.fallback_reasons[:3])
-            if usage.fallback_reasons
-            else "Fallback reasons: none"
-        ),
-        f"Model tokens: in={usage.input_tokens}, out={usage.output_tokens}",
-    ]
+    lines = []
+    if usage.fallbacks or usage.fallback_reasons:
+        lines.append(f"Provider fallbacks: {usage.fallbacks}")
+        if usage.fallback_reasons:
+            lines.append("Fallback reasons: " + "; ".join(usage.fallback_reasons[:3]))
+    lines.append(f"Model tokens: in={usage.input_tokens}, out={usage.output_tokens}")
     amount = cost.get("estimated_cost_usd")
     if amount is None:
         lines.append(f"Estimated API cost: unavailable ({cost['cost_note']})")

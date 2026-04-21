@@ -15,20 +15,20 @@ Detected style: Short-form free-form subjects
 Provider: anthropic (claude-sonnet-4-6)
 
 COMMITS THAT NEED WORK
-- 8b98e7f "fixed bug"
+- 80a8eb0 "fixed bug"
   Score: 2/10
-  Issue: The message 'fixed bug' is completely uninformative and does not describe what was actually done. The diff shows a new file src/auth.py being created with a validate_token function — this is not a bug fix, it's a new feature addition. The message is both factually wrong and too vague.
-  Better: add token validation function to auth module
+  Issue: The message 'fixed bug' is maximally vague and does not describe what was actually done: a new auth module with a token validation function was created. This isn't even a bug fix — it's new code (file is created, not modified). The message misleads reviewers about both the nature and content of the change.
+  Better: add token validation to auth module
 
 WELL-WRITTEN COMMITS
 No commits landed in the strongest bucket yet.
 
 REWORD PLAN
-Start with: git rebase -i 8b98e7f^
+Start with: git rebase -i 80a8eb0^
 Mark these commits as `reword` in the interactive list:
-- reword 8b98e7f fixed bug
+- reword 80a8eb0 fixed bug
 Suggested replacements:
-- 8b98e7f -> add token validation function to auth module
+- 80a8eb0 -> add token validation to auth module
 
 YOUR STATS
 Average score: 4.0/10
@@ -36,10 +36,8 @@ Vague commits: 1
 Very short commits: 1
 Cache hits: 0
 Cache misses: 2
-Provider fallbacks: 0
-Fallback reasons: none
-Model tokens: in=1452, out=469
-Estimated API cost: $0.0114 (standard text-token pricing for claude-sonnet-4-6)
+Model tokens: in=1456, out=490
+Estimated API cost: $0.0117 (standard text-token pricing for claude-sonnet-4-6)
 ```
 
 ## Hook install
@@ -89,8 +87,6 @@ Vague commits: 0
 Very short commits: 0
 Cache hits: 0
 Cache misses: 5
-Provider fallbacks: 0
-Fallback reasons: none
 Model tokens: in=7643, out=1304
 Estimated API cost: $0.0116 (standard text-token pricing for gpt-5.4-mini)
 ```
@@ -123,8 +119,6 @@ Document the initial setup steps in docs/setup.md.
 Include a brief note to run the installer.
 Why: Provides a fuller summary and body while staying faithful to the small docs-only change.
 
-Provider fallbacks: 0
-Fallback reasons: none
 Model tokens: in=264, out=121
 Estimated API cost: $0.0007 (standard text-token pricing for gpt-5.4-mini)
 ```
@@ -145,8 +139,6 @@ Suggested message: Update readme
 
                    - update documentation in README.md
 
-Provider fallbacks: 0
-Fallback reasons: none
 Model tokens: in=0, out=0
 Estimated API cost: $0.0000 (heuristic mode)
 ```

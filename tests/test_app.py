@@ -301,6 +301,36 @@ class LogwrightReportTests(unittest.TestCase):
         self.assertIn("Fallback reasons: provider did not return valid JSON", rendered)
         self.assertIn("REWORD PLAN", rendered)
 
+    def test_render_analysis_report_omits_empty_fallback_block(self) -> None:
+        report = AnalysisReport(
+            repo_id="https://example.com/repo.git",
+            repo_path="/tmp/repo",
+            style=build_style(),
+            results=[
+                AnalysisResult(
+                    sha="abc1234",
+                    subject="docs: update readme",
+                    score=8,
+                    confidence="high",
+                    style_fit=8,
+                    diff_alignment=8,
+                    classification="good",
+                    summary="Specific and aligned.",
+                    strengths=["Specific."],
+                    issues=[],
+                    reason_codes=[],
+                    better_message="docs: update readme",
+                    needs_human_review=False,
+                )
+            ],
+            usage=UsageStats(provider="anthropic", model="claude-sonnet-4-6"),
+            scanned_commits=1,
+        )
+        rendered = render_analysis_report(report)
+        self.assertNotIn("Provider fallbacks:", rendered)
+        self.assertNotIn("Fallback reasons:", rendered)
+        self.assertIn("Model tokens: in=0, out=0", rendered)
+
     def test_usage_stats_to_dict_includes_estimated_cost(self) -> None:
         usage = UsageStats(provider="openai", model="gpt-5.4-mini")
         usage.add_tokens(1_000, 2_000)
@@ -491,6 +521,37 @@ class LogwrightPreCommitTests(unittest.TestCase):
         self.assertIn("Provider fallbacks: 1", preview)
         self.assertIn("Fallback reasons: HTTP 503: upstream overloaded", preview)
         self.assertIn("Estimated API cost: $0.0097", preview)
+
+    def test_render_write_preview_omits_empty_fallback_block(self) -> None:
+        usage = UsageStats(provider="openai", model="gpt-5.4-mini")
+        preview = render_write_preview(
+            ChangeSummary(
+                files=["README.md"],
+                file_count=1,
+                additions=2,
+                deletions=0,
+                stats_text=" README.md | 2 ++",
+                patch_excerpt="+hello\n+world\n",
+                keywords=["readme"],
+            ),
+            RepoStyle(
+                description="No repo history yet",
+                conventional_commits=False,
+                scoped_commits=False,
+                body_rate=0.0,
+                sample_size=0,
+                dominant_types=[],
+            ),
+            [
+                SuggestionVariant(label="terse", message="Update readme", why="Short."),
+                SuggestionVariant(label="standard", message="Update readme", why="Balanced."),
+                SuggestionVariant(label="detailed", message="Update readme\n\n- update README.md", why="Most detail."),
+            ],
+            usage,
+        )
+        self.assertNotIn("Provider fallbacks:", preview)
+        self.assertNotIn("Fallback reasons:", preview)
+        self.assertIn("Model tokens: in=0, out=0", preview)
 
 
 class LogwrightHookInstallTests(unittest.TestCase):
