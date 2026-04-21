@@ -1,8 +1,12 @@
 # logwright
 
-`logwright` is a CLI tool for turning staged changes into better commit messages and grading existing git history against the actual diffs.
+`logwright` is a terminal commit-message critic and writer. It reviews commit history against the
+actual diffs, suggests stronger messages from staged changes, and can block weak pending commits
+through a repo-local `commit-msg` hook.
 
-Daily use starts with `--write --print-only` or the commit-msg hook. The focused demo below shows the companion analyze-and-reword flow.
+The core idea is simple: commit messages should be judged against the change itself, not in
+isolation. Daily use usually starts with `--write --print-only` or the hook. The focused demo
+below shows the companion analyze-and-reword flow.
 
 ![logwright terminal demo](https://raw.githubusercontent.com/Setmaster/logwright/v0.1.0/docs/logwright-demo.gif)
 
@@ -10,16 +14,14 @@ Daily use starts with `--write --print-only` or the commit-msg hook. The focused
 
 ## Highlights
 
-- Score commit messages against the change itself, not just the subject line in isolation.
-- Detect local repo conventions such as Conventional Commits and scoped subjects.
-- Generate actionable reword plans for weak commits.
-- Check pending commit messages before they land, suitable for `commit-msg` hooks and amend/reword flows.
-- Install a repo-local `commit-msg` hook instead of hand-writing the shell script.
-- Surface provider fallback reasons when a live model call fails and heuristics take over.
-- Estimate provider cost from token usage for the default shipping models.
-- Generate commit message suggestions from `git diff --cached`.
-- Analyze recent commits in the current repository or a remote git URL.
-- Fall back to deterministic heuristics when no LLM key is configured.
+- Grade commit messages against the diff, not just the subject line in isolation.
+- Detect repo conventions such as Conventional Commits and scoped subjects, then score against that local style.
+- Generate commit message suggestions directly from `git diff --cached`.
+- Produce reword-ready cleanup plans for weak commits instead of only reporting a score.
+- Check pending commit messages before they land, including amend and reword flows.
+- Install a repo-local `commit-msg` hook instead of leaving setup as manual shell glue.
+- Surface provider fallback reasons and estimated API cost in the terminal output.
+- Stay usable in deterministic heuristic mode when no LLM key is configured.
 
 ## Install
 
@@ -49,16 +51,22 @@ pip install -e .
 
 ## Quickstart
 
-With staged changes ready, the fastest daily-use path is generating a commit message:
+Generate a commit message from staged changes:
 
 ```bash
 logwright --write --print-only
 ```
 
-For a focused history pass, start smaller than the default 50-commit scan:
+Review recent history:
 
 ```bash
 logwright --analyze --limit 10
+```
+
+Install a repo-local hook for future commits:
+
+```bash
+logwright --install-commit-msg-hook
 ```
 
 ## Usage
@@ -141,30 +149,9 @@ For `--install-commit-msg-hook`, omitting `--provider` installs a repo-local heu
 default. Pass `--provider anthropic`, `--provider openai`, `--provider gemini`, or an explicit
 `--provider auto` if you want model-backed hook checks.
 
-`logwright` auto-loads a repo-local `.env` file before provider resolution, so you can keep API keys in the project root without exporting them into your shell.
-
-## Local smoke-test snapshot (2026-04-21)
-
-These entries reflect one local live run per provider path on that date. The checked-in demo
-transcript is intentionally representative rather than exhaustive, but it now includes Anthropic,
-OpenAI, and Gemini analyze runs, Anthropic/OpenAI/Gemini write runs, and heuristic hook /
-commit-msg flows.
-
-| Provider | Analyze mode | Write suggestions | Notes |
-|---|---|---|---|
-| Anthropic | Locally smoke-tested | Locally smoke-tested | Uses JSON prompting with local schema validation |
-| OpenAI | Locally smoke-tested | Locally smoke-tested | Uses Responses API structured outputs |
-| Gemini | Locally smoke-tested | Locally smoke-tested | Uses structured JSON output with `thinkingBudget: 0` and transient retries |
-| Heuristic | Locally smoke-tested | Locally smoke-tested | No API key required |
-
-If a provider call fails at runtime, `logwright` falls back to heuristics, labels the provider line accordingly, and prints the fallback reason in the terminal output. When no fallback occurs, those lines are omitted to keep the report compact.
-
-Estimated API cost uses the current standard text-token rates for the default shipping models as
-of 2026-04-21:
-
-- `gpt-5.4-mini`: $0.75 / 1M input, $4.50 / 1M output
-- `claude-sonnet-4-6`: $3.00 / 1M input, $15.00 / 1M output
-- `gemini-2.5-flash`: $0.54 / 1M input, $4.50 / 1M output
+`logwright` auto-loads a repo-local `.env` file from the target repo root before provider
+resolution, so `--repo /path/to/repo` uses `/path/to/repo/.env` rather than the caller's current
+working directory. No API key is required for heuristic mode.
 
 Environment variables:
 
@@ -189,49 +176,93 @@ logwright --analyze --provider openai --model gpt-5.4-mini
 logwright --analyze --provider gemini --model gemini-2.5-flash
 ```
 
-## Example output
+## Verified provider coverage (2026-04-21)
+
+Representative transcripts live in the [Demo Transcript](https://github.com/Setmaster/logwright/blob/v0.1.0/docs/demo.md). The current build was exercised on these provider paths:
+
+- Anthropic: analyze, write
+- OpenAI: analyze, write
+- Gemini: analyze, write
+- Heuristic: analyze, `--commit-msg-file`, `--install-commit-msg-hook`
+
+If a provider call fails at runtime, `logwright` falls back to heuristics, labels the provider
+line accordingly, and prints the fallback reason. When no fallback occurs, those lines are omitted
+to keep the report compact.
+
+## Cost estimates
+
+Terminal output includes estimated cost for the default models below, using the current standard
+text-token rates as of 2026-04-21:
+
+- `gpt-5.4-mini`: $0.75 / 1M input, $4.50 / 1M output
+- `claude-sonnet-4-6`: $3.00 / 1M input, $15.00 / 1M output
+- `gemini-2.5-flash`: $0.54 / 1M input, $4.50 / 1M output
+
+## Representative output
 
 ```text
-$ logwright --analyze --provider openai --repo /path/to/repo --limit 4 --no-cache
-Analyzed 4 commits in /path/to/repo
-Detected style: Conventional Commits
-Provider: openai (gpt-5.4-mini)
+$ logwright --analyze --repo /path/to/repo --limit 2 --no-cache
+Analyzed 2 commits in /path/to/repo
+Detected style: Short-form free-form subjects
+Provider: anthropic (claude-sonnet-4-6)
 
 COMMITS THAT NEED WORK
-- 6ee8851 "fixed bug"
-  Score: 1/10
-  Issue: The message is too vague for the actual change. The diff adds a special case in token normalization for the literal value 'expired', but 'fixed bug' gives no clue what bug was fixed or where. It also does not follow Conventional Commits style.
-  Better: fix(auth): treat 'expired' tokens as invalid in normalize_token
+- 80a8eb0 "fixed bug"
+  Score: 2/10
+  Issue: The message 'fixed bug' is maximally vague and does not describe what was actually done: a new auth module with a token validation function was created. This isn't even a bug fix - it's new code (file is created, not modified). The message misleads reviewers about both the nature and content of the change.
+  Better: add token validation to auth module
 
 WELL-WRITTEN COMMITS
-- 1342605 "docs: add README setup steps"
-  Score: 8/10
-  Why: The message matches the diff well: it documents adding a new top-level README with initial local setup steps, and it follows Conventional Commits with a clear docs prefix.
-
-COMMITS IN THE MIDDLE
-- bd1ea2d "test: cover expired token normalization"
-  Score: 7/10
-  Note: The message is mostly good and matches the repo's Conventional Commits style, but it is a bit broader than the actual diff.
-
-- 4a176ab "refactor: normalize auth tokens"
-  Score: 7/10
-  Note: The subject follows Conventional Commits and roughly matches the new auth-token helper, but it is a bit generic for a brand-new file containing only a simple normalization function.
+No commits landed in the strongest bucket yet.
 
 REWORD PLAN
-Start with: git rebase -i 6ee8851^
+Start with: git rebase -i 80a8eb0^
 Mark these commits as `reword` in the interactive list:
-- reword 6ee8851 fixed bug
+- reword 80a8eb0 fixed bug
 Suggested replacements:
-- 6ee8851 -> fix(auth): treat 'expired' tokens as invalid in normalize_token
+- 80a8eb0 -> add token validation to auth module
 
 YOUR STATS
-Average score: 5.8/10
+Average score: 4.0/10
 Vague commits: 1
 Very short commits: 1
 Cache hits: 0
-Cache misses: 4
-Model tokens: in=2064, out=973
-Estimated API cost: $0.0059 (standard text-token pricing for gpt-5.4-mini)
+Cache misses: 2
+Model tokens: in=1456, out=490
+Estimated API cost: $0.0117 (standard text-token pricing for claude-sonnet-4-6)
+```
+
+See the [Demo Transcript](https://github.com/Setmaster/logwright/blob/v0.1.0/docs/demo.md) for
+broader Anthropic, OpenAI, Gemini, hook, and commit-msg flows.
+
+## Hook usage
+
+Install the default heuristic `commit-msg` hook:
+
+```bash
+logwright --install-commit-msg-hook
+```
+
+That generates the equivalent of:
+
+```sh
+#!/bin/sh
+logwright --commit-msg-file "$1" --provider heuristic --min-score 5 --repo /path/to/repo
+```
+
+Key behaviors:
+
+- The generated hook uses the current Python interpreter path.
+- When Logwright is run from a source checkout instead of an installed package, the hook also pins that checkout on `PYTHONPATH`.
+- If Git is inheriting a shared hooks directory, Logwright sets a local `core.hooksPath` first so installation stays repo-local.
+- If the score falls below the threshold, Logwright exits nonzero and prints a suggested replacement message.
+- If there is no staged diff, Logwright falls back to the current `HEAD` commit when Git is reusing the existing message during amend and reword flows.
+
+If you want model-backed hook checks instead, pass `--provider anthropic`, `--provider openai`,
+or `--provider gemini` explicitly so latency and cost are an intentional choice:
+
+```bash
+logwright --install-commit-msg-hook --provider openai --min-score 6 --force
 ```
 
 ## Automation
@@ -275,42 +306,6 @@ Schema excerpt from a representative run:
     "estimated_cost_usd": 0.005737
   }
 }
-```
-
-## Hook usage
-
-Install a minimal heuristic `commit-msg` hook:
-
-```bash
-logwright --install-commit-msg-hook
-```
-
-That generates the equivalent of:
-
-```sh
-#!/bin/sh
-logwright --commit-msg-file "$1" --provider heuristic --min-score 5 --repo /path/to/repo
-```
-
-The generated hook uses the current Python interpreter path. When Logwright is being run from a
-source checkout instead of an installed package, it also pins that checkout on `PYTHONPATH` so
-the hook keeps working from other repositories.
-
-If Git is currently inheriting a shared hooks directory, Logwright sets a local `core.hooksPath`
-for the target repo before writing the hook so the installation stays repo-local.
-
-If the score falls below the threshold, `logwright` exits nonzero and prints a suggested
-replacement message based on the staged diff.
-
-If there is no staged diff, `logwright` falls back to the current `HEAD` commit when Git is
-reusing the existing commit message for amend and reword flows.
-
-If you want model-backed hook checks instead, pass `--provider anthropic`, `--provider openai`,
-or `--provider gemini` explicitly during installation so latency and cost are an intentional
-choice:
-
-```bash
-logwright --install-commit-msg-hook --provider openai --min-score 6 --force
 ```
 
 ## Design Decisions
