@@ -2,19 +2,21 @@
 
 `logwright` is a CLI tool for grading git commit messages against their actual diffs and helping write better ones from staged changes.
 
-See the [demo transcript](docs/demo.md) for real terminal runs covering analysis mode, write mode, and commit-msg validation.
+See the [Demo Transcript](docs/demo.md) for real terminal runs covering analysis mode, write mode, and commit-msg validation.
 
-## What it does
+[Demo Transcript](docs/demo.md) · [Roadmap](ROADMAP.md) · [License](LICENSE)
 
-- Analyze recent commits in the current repository or a remote git URL.
+## Highlights
+
 - Score commit messages against the change itself, not just the subject line in isolation.
 - Detect local repo conventions such as Conventional Commits and scoped subjects.
-- Generate commit message suggestions from `git diff --cached`.
 - Generate actionable reword plans for weak commits.
 - Check pending commit messages before they land, suitable for `commit-msg` hooks and amend/reword flows.
 - Install a repo-local `commit-msg` hook instead of hand-writing the shell script.
 - Surface provider fallback reasons when a live model call fails and heuristics take over.
 - Estimate provider cost from token usage for the default shipping models.
+- Generate commit message suggestions from `git diff --cached`.
+- Analyze recent commits in the current repository or a remote git URL.
 - Fall back to deterministic heuristics when no LLM key is configured.
 
 ## Install
@@ -25,6 +27,14 @@ Python 3.11+ is required.
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
+```
+
+## Quickstart
+
+After installation, analyze the current repository:
+
+```bash
+logwright --analyze
 ```
 
 ## Usage
@@ -260,3 +270,7 @@ Run directly from source:
 ```bash
 python3 -m logwright --help
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
